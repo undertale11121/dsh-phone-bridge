@@ -28,6 +28,7 @@ import { randomUUID, randomBytes, randomInt } from 'node:crypto'
 import {
   beaconProbe,
   bridgeDir,
+  headlessPatchPath,
   compareEndpoint,
   dshHome,
   scanLan,
@@ -1000,6 +1001,8 @@ class DesktopBridge {
     const id = newAgentId(label)
     const logFile = path.join(bridgeDir(), 'agents', `${id}.log`)
     ensureDir(path.dirname(logFile))
+    // 没有 headless 模型配置就先自动生成一份，不然子智能体一启动就报缺凭据。
+    ensureHeadlessPatch()
     const script = fileURLToPath(new URL('./agent-run.mjs', import.meta.url))
     // process.execPath 在这里是 Electron 的可执行文件，不带 ELECTRON_RUN_AS_NODE
     // 就会被当成 GUI 启动（参数被忽略、立刻退出），子智能体等于没跑；以前 stdio
@@ -2138,17 +2141,78 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
 }
 
 // 桌面子智能体需要 `dsh` 命令行（agent-run.mjs 用它跑 headless 会话）。
+// DSH 桌面版没有 dsh 命令，包里自带了一个转发器（bin/dsh.mjs，去跑 app.asar 里的 bin.js）。
+// 没它的话桌面子智能体在默认安装上永远起不来。
+function bundledDsh() {
+  try {
+    const here = fileURLToPath(new URL('../bin/', import.meta.url))
+    const candidate = path.join(here, 'dsh.mjs')
+    if (fs.existsSync(candidate)) return candidate
+  } catch {}
+  return ''
+}
+
+// dsh headless 不加载 profile，模型配置（provider/model/凭据）必须单独给它一份。
+// 以前要用户手工拷贝，装完插件第一次派活就卡住；这里改成自动从现有 profile 抽出来。
+function splitTopEntries(text) {
+  const blocks = []
+  let current = null
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (/^-\s+id:\s*/.test(line)) {
+      if (current) blocks.push(current.join('\n'))
+      current = [line]
+      continue
+    }
+    if (!current) continue
+    if (!line.trim()) { current.push(line); continue }
+    if (!/^\s/.test(line)) { blocks.push(current.join('\n')); current = null; continue }
+    current.push(line)
+  }
+  if (current) blocks.push(current.join('\n'))
+  return blocks.map((block) => block.replace(/\s+$/, ''))
+}
+
+export function ensureHeadlessPatch() {
+  const target = headlessPatchPath()
+  if (fs.existsSync(target)) return target
+  const profilesDir = path.join(dshHome(), 'profiles')
+  let names = []
+  try { names = fs.readdirSync(profilesDir) } catch { return '' }
+  names.sort((a, b) => (/desktop/.test(b) ? 1 : 0) - (/desktop/.test(a) ? 1 : 0))
+  for (const name of names) {
+    let text = ''
+    try { text = fs.readFileSync(path.join(profilesDir, name, 'cordis.patch.yml'), 'utf8') } catch { continue }
+    const blocks = splitTopEntries(text)
+    const isModel = (block) => /^-\s+id:\s*['"]?(agent-default-model|llm-pi-ai)['"]?\s*$/m.test(block)
+    const keep = blocks.filter(isModel)
+    if (!keep.some((block) => /^-\s+id:\s*['"]?agent-default-model['"]?\s*$/m.test(block))) continue
+    const out = ['# 由 phone-bridge 自动生成：dsh headless 用的模型配置。', ...keep, '- id: credentials', '  disabled: false'].join('\n') + '\n'
+    try {
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      fs.writeFileSync(target, out)
+      log(`已自动生成 headless 模型配置：${target}`)
+    } catch (error) {
+      log(`生成 headless 模型配置失败：${error?.message || error}`)
+      return ''
+    }
+    return target
+  }
+  return ''
+}
+
 function dshBin() {
-  // 配置里点名优先，其次环境变量，最后看 PATH。
+  // 配置里点名优先，其次环境变量，再次包自带，最后看 PATH。
   const configured = String(loadDesktopConfig()?.dshBin || '').trim()
   if (configured) return configured
-  return process.env.DSH_BIN || 'dsh'
+  if (process.env.DSH_BIN) return process.env.DSH_BIN
+  return bundledDsh() || 'dsh'
 }
 
 function hasDshCli() {
   const configured = String(loadDesktopConfig()?.dshBin || '').trim()
   if (configured) return fs.existsSync(configured)
   if (process.env.DSH_BIN) return true
+  if (bundledDsh()) return true
   try {
     const probe = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['dsh'], { encoding: 'utf8', timeout: 4000 })
     return probe.status === 0 && String(probe.stdout || '').trim() !== ''
