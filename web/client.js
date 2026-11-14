@@ -24,6 +24,11 @@ function __buildPhoneBridge(require) {
       zh: {
         title: '互联',
         subtitle: '电脑端 · 和手机上的模型一起干活：它截图、点按、跑真机测试，两边也能互相派活',
+        guideTitle: '怎么用（三步）',
+        guide1: '① 随便挑一个会话，在它顶部点「🔗 互联」。',
+        guide2: '② 手机那边会自动开一个对应的会话（已经有的就复用），一个电脑会话配一个手机会话，不会串。',
+        guide3: '③ 之后两个模型直接说话就行，不用在这个面板里选。手机没连上时先扫码配对。',
+        wakeFailed: '上次没投递成功（消息还在工作台，会继续重试）：',
         online: '手机在线',
         offline: '手机不在线',
         device: '设备',
@@ -96,6 +101,11 @@ function __buildPhoneBridge(require) {
       en: {
         title: 'Link',
         subtitle: 'Desktop side · lets the phone model take over screenshots, taps and device tests',
+        guideTitle: 'How to use (3 steps)',
+        guide1: '1. Open any session and tap the 🔗 Link button in its header.',
+        guide2: '2. The phone opens a matching conversation automatically (it reuses one if it exists) — one phone conversation per desktop session, so nothing gets mixed.',
+        guide3: '3. Then just let the two models talk. No session picking in this panel. Pair with the QR code first if the phone is offline.',
+        wakeFailed: 'Last delivery failed (the message is still on the workbench and will be retried):',
         online: 'Phone online',
         offline: 'Phone offline',
         device: 'Device',
@@ -368,6 +378,18 @@ function __buildPhoneBridge(require) {
           children.push(h('div', { key: 'err', style: Object.assign({}, muted, { color: 'var(--dsw-alias-accent-red, #f28b82)', padding: '6px 0' }) }, error))
         }
 
+        // 面板上东西多，先给一条三步上手，省得用户不知道从哪开始。
+        children.push(
+          h('details', { key: 'guide', style: { marginTop: 10 } },
+            h('summary', { style: Object.assign({}, muted, { cursor: 'pointer', fontSize: 13 }) }, t.guideTitle),
+            h('div', { style: { marginTop: 4, fontSize: 13, lineHeight: 1.75, opacity: 0.9 } },
+              h('div', null, t.guide1),
+              h('div', null, t.guide2),
+              h('div', null, t.guide3),
+            ),
+          ),
+        )
+
         if (state && !onPhone) {
           children.push(
             h('div', { key: 'meta', style: { marginTop: 8 } },
@@ -423,7 +445,9 @@ function __buildPhoneBridge(require) {
               ? h('div', { style: Object.assign({}, muted, { padding: '6px 0 0' }) }, '✓ ' + shortTime(wake.lastWake.at) + ' · ' + String(wake.lastWake.preview || '').slice(0, 80))
               : null,
             wake.lastError
-              ? h('div', { style: Object.assign({}, muted, { color: 'var(--dsw-alias-accent-red, #f28b82)', padding: '6px 0 0' }) }, wake.lastError)
+              ? h('div', { style: { color: 'var(--dsw-alias-accent-red, #f28b82)', padding: '6px 0 0', fontSize: 12, lineHeight: 1.55 } },
+                  h('div', null, t.wakeFailed),
+                  h('div', { style: { opacity: 0.8, marginTop: 2 } }, wake.lastError))
               : null,
             h('div', { style: cardTitle }, t.registryTitle),
             h('div', { style: Object.assign({}, muted, { padding: '2px 0 6px' }) }, t.registryHint),

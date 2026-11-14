@@ -1361,8 +1361,18 @@ export function ensureHeadlessPatch(home = dshHome()) {
   for (const file of candidates) {
     try {
       const yaml = loadYaml()
-      if (!yaml) break
       const text = fs.readFileSync(file, 'utf8')
+      if (!yaml) {
+        // 没装 yaml 库时（比如子进程只跑 bridge.mjs），退回文本抽取：
+        // 按顶层 "- id:" 切块，只留 agent-default-model / llm-pi-ai，再补 credentials。
+        const blocks = text.split(/^(?=-\s+id:)/m)
+        const only = blocks.filter((block) => /^-\s+id:\s*['"]?(agent-default-model|llm-pi-ai)['"]?\s*$/m.test(block))
+        if (!only.some((block) => /^-\s+id:\s*['"]?agent-default-model['"]?\s*$/m.test(block))) continue
+        ensureDir(path.dirname(target))
+        fs.writeFileSync(target, ['# 由 phone-bridge 自动生成：dsh headless 用的模型配置。', ...only.map((block) => block.trimEnd()), '- id: credentials', '  disabled: false', ''].join('\n'), 'utf8')
+        log(`已从 ${file} 生成 headless 模型补丁（文本模式）：${target}`)
+        return target
+      }
       const parsed = yaml.parse(text)
       const entries = Array.isArray(parsed) ? parsed : []
       const keep = entries.filter((entry) => ['agent-default-model', 'llm-pi-ai'].includes(entry?.id))
