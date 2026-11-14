@@ -656,7 +656,7 @@ export async function wakeSession(agents, sessionId, text, mode = 'queue', optio
     if (stuckFor < BUSY_TIMEOUT_MS) {
       throw new Error(`会话 ${String(sessionId).slice(0, 8)}… 正忙（${status}），这条消息等它空下来再投`)
     }
-    log(`会话 ${String(sessionId).slice(0, 8)}… 报忙已 ${Math.round(stuckFor / 1000)}s，状态多半卡住了，这次强行投递`)
+    console.log(`[phone-bridge] 会话 ${String(sessionId).slice(0, 8)}… 报忙已 ${Math.round(stuckFor / 1000)}s，状态多半卡住了，这次强行投递`)
     busySince.delete(sessionId)
   } else {
     busySince.delete(sessionId)
@@ -1246,7 +1246,7 @@ async function ensureDesktopSession(agents, live, desktopId) {
   const id = known && /^session-/.test(known) ? known : `session-${crypto.randomUUID()}`
   await agents.create({ sessionId: id, agentOptions: {} })
   writeJson(peerLinksPath(), { ...links, [desktopId]: id })
-  log(`电脑会话 ${String(desktopId).replace(/^session-/, '').slice(0, 8)} → 手机会话 ${id.replace(/^session-/, '').slice(0, 8)}`)
+  console.log(`[phone-bridge] 电脑会话 ${String(desktopId).replace(/^session-/, '').slice(0, 8)} → 手机会话 ${id.replace(/^session-/, '').slice(0, 8)}`)
   return { id }
 }
 
