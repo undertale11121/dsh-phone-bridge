@@ -1310,6 +1310,17 @@ export function ensureThreadPatch(home = dshHome()) {
 
 // Headless sessions run in their own DSH_HOME so the phone's normal chat list
 // stays clean (one dedicated session per project instead of one per task).
+// 会话级开关在手机上这一侧：没开互联的会话，互联工具一律不可用。
+// 手机端拿不到 caller（标准 MCP 没有这个概念），退一步用「电脑记下的互联表」判断：
+// 一条都没有 = 用户从来没开过互联，这时不该让模型偷偷操作电脑。
+// bridge_* 是诊断类，永远放行，不然出了问题连排查都做不了。
+export function phoneGateMessage(tool, links) {
+  if (!/^(peer_|phone_|agent_|session_)/.test(String(tool || ''))) return ''
+  if (/^phone_bridge_/.test(String(tool || ''))) return ''
+  if (links && Object.keys(links).length) return ''
+  return '这个会话没开互联，互联工具现在不可用。先在电脑上任意会话顶部点「🔗 互联」（或让电脑模型用 peer_link 开一个），开了之后这些工具立刻能用。'
+}
+
 export function askHome() {
   if (process.env.PHONE_BRIDGE_ASK_HOME) {
     ensureDir(process.env.PHONE_BRIDGE_ASK_HOME)
@@ -1939,6 +1950,11 @@ export async function runPhoneMcp({ withMcp = true } = {}) {
       version: '0.3.0',
       tools: phoneTools(bridge),
       call: async (name, args, caller) => {
+        if (process.env.PHONE_BRIDGE_NO_GATE !== '1') {
+          const links = readJson(path.join(bridgeDir(), 'peer-links.json'), {}) || {}
+          const gate = phoneGateMessage(name, links)
+          if (gate) throw new Error(gate)
+        }
         const handler = handlers[name]
         if (!handler) throw new Error(`未实现：${name}`)
         return handler(args)
