@@ -620,10 +620,8 @@ class DesktopBridge {
           key = String((Array.isArray(liveNow?.sessions) ? liveNow.sessions[0]?.id : '') || '')
         }
         if (!key) {
-          // 用户 m04603：手机上点开互联、电脑上却一个会话都没开 —— 别报错，
-          // 留张便签给宿主半，让它开一个新会话再接上。
-          patchDesktopConfig({ pendingNewSession: { phoneId, at: new Date().toISOString() } })
-          return sendJson(res, 200, { ok: true, pending: true, text: '电脑上没有开着的会话，正在给你开一个新的…' })
+          // 用户 m07416：不要自动新开对话了 —— 先在电脑上开一个会话再连。
+          return sendJson(res, 400, { ok: false, text: '电脑上一个会话都没开：先在电脑上开一个对话，再点这颗开关' })
         }
         if (body?.off) delete links[key]
         else links[key] = { phoneId: phoneId || String(links[key]?.phoneId || ''), at: new Date().toISOString() }
