@@ -115,7 +115,23 @@ function pidAlive(pid) {
   }
 }
 
+// 面板 5 秒轮询一次，开几个标签页就有几个并发调用。原来每个调用都会往下走到
+// spawn，抢在前面那几个 bridge 因为端口占用必然退出，desktop.lock 还会记下死 pid。
+// 用同一个 Promise 去重「正在启动」的那一段。
+let serverBooting = null
 async function ensureServer(config) {
+  if (serverBooting) return serverBooting
+  serverBooting = (async () => {
+    try {
+      return await bootServer(config)
+    } finally {
+      serverBooting = null
+    }
+  })()
+  return serverBooting
+}
+
+async function bootServer(config) {
   const running = await probe(config.port, 800)
   if (running?.ok) {
     const lock = readJson(lockPath(), null)
