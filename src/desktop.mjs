@@ -55,7 +55,7 @@ import { startSetup } from './setup.mjs'
 import { qrSvg } from './qr.mjs'
 import { pairPageHtml } from './pair.mjs'
 import { workbenchHtml } from './workbench.mjs'
-import { append as threadAppend, read as threadRead, waitFor as threadWait } from './thread.mjs'
+import { append as threadAppend, read as threadRead, waitFor as threadWait, LEVELS } from './thread.mjs'
 import { addAgent, findAgent, listAgents, nameOf, newAgentId, removeAgent } from './agents.mjs'
 
 const MAX_FILE_BYTES = 16 * 1024 * 1024
@@ -558,9 +558,9 @@ class DesktopBridge {
         // 手机往工作台写消息也算「还活着」：它可能只发消息不轮询（切后台、
         // 换网络），这时 online 不该翻成 false。
         if (sender !== 'desktop') this.markSeen(body?.auth?.id)
-        const row = threadAppend(sender, body?.text, to)
+        const row = threadAppend(sender, body?.text, to, body?.level)
         const label = known?.name || (sender === 'desktop' ? '电脑模型' : '手机模型')
-        log(`对话 +1（${label}${to !== 'all' ? ` → ${to}` : ''}）：${truncate(row.text, 90)}`)
+        log(`对话 +1（${label}${to !== 'all' ? ` → ${to}` : ''}）${row.level !== 'normal' ? `[${row.level}]` : ''}：${truncate(row.text, 90)}`)
         return sendJson(res, 200, { ok: true, seq: row.seq, message: row })
       }
     }
@@ -1085,12 +1085,17 @@ export function desktopTools(bridge) {
     {
       name: 'agent_send',
       description:
-        '给指定 agent 发消息（不执行任务）：to 写 agent_list 里的 id，省略/写 all 就是广播给所有人。适合找子智能体、给某个 agent 留言。',
+        '给指定 agent 发消息（不执行任务）：to 写 agent_list 里的 id，省略/写 all 就是广播给所有人。适合找子智能体、给某个 agent 留言。level 标重要性，对方唤醒语里会带对应符号。',
       inputSchema: {
         type: 'object',
         properties: {
           to: { type: 'string', description: '目标 agent id，例如 phone、review-1；省略=广播' },
           text: { type: 'string', description: '要说的内容' },
+          level: {
+            type: 'string',
+            description:
+              '重要性：urgent(❗等你回) / question(❓要你决定) / alert(⚠️出问题) / done(✅做完了) / report(📋进度汇报不用回)；不写=普通',
+          },
         },
         required: ['text'],
         additionalProperties: false,
@@ -1172,12 +1177,17 @@ export function desktopTools(bridge) {
     {
       name: 'peer_say',
       description:
-        '给对端模型发一句话，并立刻唤醒它一次（不执行任务，只是说话）：对方那边的收件器会在几秒内把这条投进它开着的会话。默认发给对端模型本人；要发给某个具体会话就写 phone:<会话名> / desktop:<会话名>。',
+        '给对端模型发一句话，并立刻唤醒它一次（不执行任务，只是说话）：对方那边的收件器会在几秒内把这条投进它开着的会话。默认发给对端模型本人；要发给某个具体会话就写 phone:<会话名> / desktop:<会话名>。level 标重要性，对方的唤醒语里会带上对应符号（❗❓⚠️✅📋）。',
       inputSchema: {
         type: 'object',
         properties: {
           text: { type: 'string', description: '要对对方模型说的话' },
           to: { type: 'string', description: '收件人：省略=对端模型；也可写 phone / phone:<会话名> / desktop / desktop:<会话名>' },
+          level: {
+            type: 'string',
+            description:
+              '这条有多要紧：urgent(❗等你回) / question(❓要你决定) / alert(⚠️出问题) / done(✅做完了) / report(📋进度汇报不用回)；不写=普通',
+          },
         },
         required: ['text'],
         additionalProperties: false,
@@ -1571,9 +1581,10 @@ export async function runDesktopMcp() {
       // 不给 to 就发给「对端模型」本身，而不是广播：对端收件器只认发给自己的
       // 消息（to === 'phone' / 'desktop'），广播的话它不会投递、也就不会唤醒。
       const to = String(args?.to || defaultPeerTarget())
-      const row = threadAppend('desktop', args?.text, to)
+      const row = threadAppend('desktop', args?.text, to, args?.level)
       const peer = to === 'all' ? '所有人（不会唤醒对端）' : nameOf(to)
-      return `已发出（第 ${row.seq} 条 → ${peer}）。对方收件器几秒内会把它投进开着的会话并唤醒模型；要当场等回话用 agent_converse。`
+      const mark = LEVELS[row.level]?.mark ? `${LEVELS[row.level].mark} ` : ''
+      return `${mark}已发出（第 ${row.seq} 条 → ${peer}，重要性 ${LEVELS[row.level]?.label || '普通'}）。对方收件器几秒内会把它投进开着的会话并唤醒模型；要当场等回话用 agent_converse。`
     },
     async agent_converse(args) {
       const to = String(args?.to || 'phone')

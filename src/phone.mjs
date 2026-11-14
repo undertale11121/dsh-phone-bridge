@@ -433,7 +433,7 @@ export class PhoneBridge {
       case 'agent.list':
         return { agents: await this.remoteAgents() }
       case 'agent.send':
-        return await this.sendAs(String(args?.as || 'phone'), String(args?.to || 'all'), String(args?.text ?? ''))
+        return await this.sendAs(String(args?.as || 'phone'), String(args?.to || 'all'), String(args?.text ?? ''), args?.level)
       case 'agent.read':
         return { messages: (await this.readAs(String(args?.as || 'phone'), Number(args?.since || 0), Number(args?.limit || 20))).messages }
       case 'agent.converse':
@@ -887,9 +887,9 @@ export class PhoneBridge {
     return data?.agents || []
   }
 
-  async sendAs(from, to, text) {
+  async sendAs(from, to, text, level) {
     if (!String(text || '').trim()) throw new Error('消息是空的')
-    return await this.post('/thread', { from, to, text })
+    return await this.post('/thread', { from, to, text, level })
   }
 
   async readAs(as, since = 0, limit = 20) {
@@ -1447,12 +1447,13 @@ export function phoneTools(bridge) {
     },
     {
       name: 'agent_send',
-      description: '给指定 agent 发一条消息（不执行任务）：to 写 agent_list 里的 id，省略=发给电脑模型。',
+      description: '给指定 agent 发一条消息（不执行任务）：to 写 agent_list 里的 id，省略=发给电脑模型。level 标重要性，对方唤醒语里会带对应符号。',
       inputSchema: {
         type: 'object',
         properties: {
           to: { type: 'string', description: '目标 agent id，省略=desktop' },
           text: { type: 'string', description: '要说的内容' },
+          level: { type: 'string', description: '重要性：urgent(❗等你回) / question(❓要你决定) / alert(⚠️出问题) / done(✅做完了) / report(📋汇报不用回)；不写=普通' },
         },
         required: ['text'],
         additionalProperties: false,
@@ -1510,12 +1511,13 @@ export function phoneTools(bridge) {
     {
       name: 'peer_say',
       description:
-        '在「共享工作台」上给电脑端留一句话（不执行任务，只是说话）。to 默认 desktop（最近用过互联的会话）；写 desktop:<名字> 可以指定唤醒哪个会话，比如 desktop:登录页。',
+        '在「共享工作台」上给电脑端留一句话（不执行任务，只是说话）。to 默认 desktop（最近用过互联的会话）；写 desktop:<名字> 可以指定唤醒哪个会话，比如 desktop:登录页。level 标重要性（❗❓⚠️✅📋），对方的唤醒语里会带上。',
       inputSchema: {
         type: 'object',
         properties: {
           text: { type: 'string', description: '要对电脑模型说的话' },
           to: { type: 'string', description: '收件人：desktop（默认）或 desktop:<会话名>' },
+          level: { type: 'string', description: '这条有多要紧：urgent(❗等你回) / question(❓要你决定) / alert(⚠️出问题) / done(✅做完了) / report(📋汇报不用回)；不写=普通' },
         },
         required: ['text'],
         additionalProperties: false,
@@ -1666,8 +1668,8 @@ export async function runPhoneMcp({ withMcp = true } = {}) {
     },
     async agent_send(args) {
       const to = String(args?.to || 'desktop')
-      const row = await bridge.sendAs('phone', to, args?.text)
-      return `已发出（第 ${row.seq} 条 → ${nameOf(to)}），对方下次运行时能看到。`
+      const row = await bridge.sendAs('phone', to, args?.text, args?.level)
+      return `已发出（第 ${row.seq} 条 → ${nameOf(to)}，重要性 ${row.level === 'normal' ? '普通' : row.level}），对方下次运行时能看到。`
     },
     async agent_converse(args) {
       const to = String(args?.to || 'desktop')
@@ -1946,8 +1948,8 @@ export async function runPhoneMcp({ withMcp = true } = {}) {
       }
       if (id === 'agent.send') {
         if (!fields.text) return { text: '先写一句话' }
-        const row = await bridge.sendAs(String(fields.as || 'phone'), String(fields.to || 'all'), String(fields.text))
-        return { text: `已发出（第 ${row.seq} 条）` }
+        const row = await bridge.sendAs(String(fields.as || 'phone'), String(fields.to || 'all'), String(fields.text), fields.level)
+        return { text: `已发出（第 ${row.seq} 条，重要性 ${row.level === 'normal' ? '普通' : row.level}）` }
       }
       if (id === 'agent.read') {
         const data = await bridge.readAs(String(fields.as || 'phone'), Number(fields.since || 0), Number(fields.limit || 30))

@@ -618,6 +618,32 @@ const REPLY_WAIT_MS = 120_000
 // 商量着干活，光看到「N 条」不知道对方要什么，结果就是各干各的。
 const PEEK_CHARS = 200
 
+// 两端约定的暗号：发送方标 level，唤醒语里就带对应符号，一眼看出要不要
+// 放下手上的活。web 半不能 import ../src/*，所以和 src/thread.mjs 各存一份。
+const LEVEL_MARKS = { urgent: '❗', question: '❓', alert: '⚠️', done: '✅', report: '📋' }
+const LEVEL_LABELS = {
+  urgent: '重要，等你回',
+  question: '要你决定',
+  alert: '出问题了',
+  done: '做完了',
+  report: '进度汇报，不用回',
+  normal: '',
+}
+const LEVEL_ORDER = ['urgent', 'alert', 'question', 'done', 'report', 'normal']
+
+function topLevel(rows) {
+  for (const name of LEVEL_ORDER) {
+    if (rows.some((item) => item && item.level === name)) return name
+  }
+  // 老消息没有 level 字段：翻翻正文开头有没有暗号，有就认。
+  for (const item of rows) {
+    const mark = String(item && item.text ? item.text : '').trim().slice(0, 2)
+    const found = Object.keys(LEVEL_MARKS).find((name) => LEVEL_MARKS[name] && mark.startsWith(LEVEL_MARKS[name]))
+    if (found) return found
+  }
+  return 'normal'
+}
+
 // 「（手机已连上电脑）」这类是桥接自己写的系统通知，不是模型说的话。
 // 拿它去唤醒对端模型，就会得到「手机 1 条（9 字）」这种莫名其妙的消息。
 const NOTICE_RE = /^（[^）]{0,40}已连上[^）]{0,40}）$/
@@ -650,8 +676,11 @@ export function composeBatch(incoming, who) {
   // 两个模型要商量着干活，得先看见对方在说什么，不然就是各干各的。
   const joined = rows.map((item) => String(item?.text == null ? '' : item.text)).join('\n')
   const peek = joined.length > PEEK_CHARS ? `${joined.slice(0, PEEK_CHARS)}…` : joined
+  const level = topLevel(rows)
+  const mark = LEVEL_MARKS[level] ? `${LEVEL_MARKS[level]} ` : ''
+  const label = LEVEL_LABELS[level] ? `（${LEVEL_LABELS[level]}）` : ''
   return (
-    `【互联】${head}（${total} 字）${when}\n${peek}\n` +
+    `${mark}【互联】${head}（${total} 字）${when}${label}\n${peek}\n` +
     '（全文在工作台，peer_read 看完整内容；回话时顺带说一句你这边的进度，对方才知道你在干哪一半。）'
   )
 }

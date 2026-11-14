@@ -83,7 +83,31 @@ export function readAll() {
   return out.sort((a, b) => a.seq - b.seq)
 }
 
-export function append(from, text, to = 'all') {
+// 两端约定的「暗号」：发消息时标一个 level，唤醒语里就会带对应符号，
+// 对方一眼看出这条要不要放下手上的活。没有标就是普通消息。
+export const LEVELS = {
+  urgent: { mark: '❗', label: '重要，等你回' },
+  question: { mark: '❓', label: '要你决定' },
+  alert: { mark: '⚠️', label: '出问题了' },
+  done: { mark: '✅', label: '做完了' },
+  report: { mark: '📋', label: '进度汇报，不用回' },
+  normal: { mark: '', label: '普通' },
+}
+
+// 一条消息里混了几种 level 时，按要紧程度取最高的那个。
+export const LEVEL_ORDER = ['urgent', 'alert', 'question', 'done', 'report', 'normal']
+
+export function normalizeLevel(value) {
+  const key = String(value == null ? '' : value).trim().toLowerCase()
+  if (LEVELS[key] && key !== 'normal') return key
+  // 也接受直接发表情符号（模型可能懒得写英文）
+  for (const [name, item] of Object.entries(LEVELS)) {
+    if (item.mark && key === item.mark) return name
+  }
+  return 'normal'
+}
+
+export function append(from, text, to = 'all', level = 'normal') {
   const clean = String(text ?? '').trim()
   if (!clean) throw new Error('消息是空的')
   const sender = String(from || 'desktop').slice(0, 40)
@@ -94,6 +118,7 @@ export function append(from, text, to = 'all') {
       seq: (all[all.length - 1]?.seq || 0) + 1,
       from: sender,
       to: target,
+      level: normalizeLevel(level),
       text: clean.slice(0, MAX_TEXT),
       at: new Date().toISOString(),
     }

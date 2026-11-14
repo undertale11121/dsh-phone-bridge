@@ -120,6 +120,19 @@ check('提示里带 peer_read 的指引', batch.includes('peer_read'), batch)
 const longOne = host.composeBatch([{ from: 'phone', text: 'x'.repeat(5000) }], '手机模型')
 check('长消息只带摘要不贴全文', longOne.length < 600 && longOne.includes('5000 字'), `${longOne.length}:${longOne}`)
 
+// 暗号：发送方标了 level，唤醒语头上就带符号，一眼看出要不要放下手上的活。
+const urgentOne = host.composeBatch([{ from: 'phone', text: '快看', level: 'urgent' }], '手机模型')
+check('urgent 带 ❗', urgentOne.startsWith('❗') && urgentOne.includes('重要，等你回'), urgentOne)
+const questionOne = host.composeBatch([{ from: 'phone', text: '选哪个', level: 'question' }], '手机模型')
+check('question 带 ❓', questionOne.startsWith('❓'), questionOne)
+const mixedOne = host.composeBatch([
+  { from: 'phone', text: '汇报一下', level: 'report' },
+  { from: 'phone', text: '出错了', level: 'alert' },
+], '手机模型')
+check('混着发取最要紧的那个', mixedOne.startsWith('⚠️'), mixedOne)
+const plainOne = host.composeBatch([{ from: 'phone', text: '随口一说' }], '手机模型')
+check('普通消息不带符号', !/^[❗❓⚠️✅📋]/.test(plainOne) && !plainOne.includes('（普通）'), plainOne)
+
 const tree = []
 const fakeDocument = { documentElement: { lang: 'zh-CN' } }
 const React = {
