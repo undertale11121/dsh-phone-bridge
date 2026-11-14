@@ -1,6 +1,6 @@
 # 互联（dsh-phone-bridge）
 
-让 DSH 桌面端和一台 dsh-go 手机连起来，两端的模型可以互相操作、互相派活。
+让 DSH 桌面端和一台 [DSH Go](https://github.com/ccch1mneyyy/dsh-go) 手机连起来，两端的模型可以互相操作、互相派活。
 
 桌面模型能做的事：读手机屏幕（带可点的元素编号）、点按、输入、按返回/主页/最近任务、打开应用或链接、滚动、剪贴板、发通知、设置闹钟/日程/导航、长列表收集、把某一步交给用户手动做。也能在手机上调 `peer_run` 跑 shell、`peer_put`/`peer_get` 传文件。
 反向也行：手机模型有自己的操控和 shell 能力，可以把整个任务派给电脑这边跑（`phone_ask`），跑完把结果送回来；两边还能就一件事一轮一轮商量（`peer_converse`）。
@@ -8,6 +8,8 @@
 ## 装
 
 需要 DSH 桌面端（`>=0.2.1-rc.2 <0.3.0-0`）和 Node 20 以上。
+
+**手机端先装 [DSH Go](https://github.com/ccch1mneyyy/dsh-go)**：Android 8+，作者 [ccch1mneyyy](https://github.com/ccch1mneyyy)，是 DeepSeek Harness 的第三方手机客户端。第一次打开时让它装好内置 Linux 环境（约 1 GB，不需要 root），本插件的手机那一半就跑在里面。
 
 **从插件市场装**：在「插件市场」里点安装，装完**重启一次 DSH**。第一次启动时 bundle 会自己把引擎那一行（`bridge.mjs` 的绝对路径）补进当前 profile 的 `cordis.patch.yml`，所以第二次启动后 `mcp__phone-bridge__*` 工具才出现。补丁写前会留一份 `cordis.patch.yml.bak-autopatch`。
 
@@ -49,7 +51,7 @@ npx dsh-phone-bridge print-patch     # 打印要加进 profile 的 YAML
 
 ```bash
 node bridge.mjs doctor     # 环境、配对、端口、补丁是否就位
-npm test                   # web bundle 的 48 项检查，不起浏览器
+npm test                   # web bundle 的 65 项检查，不起浏览器
 npm run test:all           # 再跑 auto / pair / qr
 ```
 
@@ -60,6 +62,10 @@ npm run test:all           # 再跑 auto / pair / qr
 - `bridge.mjs auto` 在手机上会走 `phone` 角色、在电脑上走 `desktop` 角色；同一段补丁两端通用。
 - Windows 上如果 agent shell 用 MSYS bash，路径写成 `/d/repo` 这种形式。
 
-## 许可
+## 许可与致谢
 
 MIT。图标与源码均为本仓库原创。
+
+手机端宿主是 [DSH Go](https://github.com/ccch1mneyyy/dsh-go)（AGPL-3.0，作者 [ccch1mneyyy](https://github.com/ccch1mneyyy)）——DeepSeek Harness 的第三方 Android 客户端。本插件以它的插件协议和内置 Linux 环境为宿主，**不包含、也不修改它的任何代码**；`dsh-go-plugin/` 下是我们自己写的插件，不是你项目代码的衍生。
+
+桌面端宿主是 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)。
