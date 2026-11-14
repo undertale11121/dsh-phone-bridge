@@ -497,10 +497,10 @@ function __buildPhoneBridge(require) {
                 },
                   h('option', { value: '' }, t.collabNone),
                   live.map(function (item) {
-                    // 显示人起的名字，不要再出现 session-xxxx / 长路径这种代码
+                    // 显示左侧栏里那个会话名字（title），没有才退到手动名字 / 目录名
                     var folder = String(item.cwd || '').split(/[\\/]/).filter(Boolean).pop() || ''
-                    var label = item.name || item.title || folder || '会话'
-                    if (item.name && folder && item.name !== folder) label += ' · ' + folder
+                    var label = item.title || item.name || folder || '会话'
+                    if (item.title && item.name && item.name !== item.title) label += ' · ' + item.name
                     return h('option', { key: item.id, value: item.id, title: item.cwd || item.id }, label)
                   }),
                 ),

@@ -260,9 +260,10 @@ async function snapshot() {
         //   ① registry 里登记过的名字  ② 活会话的 cwd 目录名  ③ id 前 8 位
         const id = readWake(config).sessionId || readActive()?.sessionId || ''
         if (!id) return ''
+        const liveRow = listLiveSessions().find((item) => item.id === id)
+        if (liveRow?.title) return liveRow.title
         const row = sessionRows().find((item) => item.id === id)
         if (row && row.name) return row.name
-        const liveRow = listLiveSessions().find((item) => item.id === id)
         const base = liveRow?.cwd ? path.basename(liveRow.cwd) : ''
         return base || id.replace(/^session-/, '').slice(0, 8)
       })(),
@@ -702,6 +703,32 @@ async function wakeTick(agents) {
 // 换个思路：不做「点名」，做「掷给开着的那个」。每次 tick 从 agents 服务里
 // 现查还开着的会话，按最近活跃排序取第一个；有多个且用户又在卡片里明确指定
 // 了某个 id，就仍以那个 id 为准（它在就投它）。
+// 会话在左侧栏显示的名字（就是「安装 dsh-phone-bridge 插件」那种），存在
+// projcache 的 record.rows.title 里；运行中的 agent 对象上没有它。
+const titleCache = new Map()
+function sessionTitle(id) {
+  const key = String(id || '')
+  if (!key) return ''
+  const file = path.join(dshHome(), 'storages', 'session_projcache', 'sessions', `${key}.json`)
+  let stamp = 0
+  try {
+    stamp = fs.statSync(file).mtimeMs
+  } catch {
+    return ''
+  }
+  const hit = titleCache.get(key)
+  if (hit && hit.stamp === stamp) return hit.value
+  let value = ''
+  try {
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'))
+    value = String(data?.record?.rows?.title?.val || '')
+  } catch {
+    value = ''
+  }
+  titleCache.set(key, { stamp, value })
+  return value
+}
+
 export function listLiveSessions(agents) {
   const handle = agents || agentsRef
   const rows = []
@@ -722,7 +749,7 @@ export function listLiveSessions(agents) {
       id: String(id),
       at: Number(item?.at || item?.updatedAt || item?.lastActivity || 0) || 0,
       cwd: String(item?.cwd || header.cwd || known.cwd || ''),
-      title: String(item?.title || header.title || ''),
+      title: sessionTitle(id) || String(item?.title || header.title || ''),
       name: String(known.name || ''),
       purpose: String(known.purpose || ''),
     })
