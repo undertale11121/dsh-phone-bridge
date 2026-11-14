@@ -41,3 +41,7 @@ bridge.pid
 inbox-state.json
 wake-state.json
 test/home/
+desktop.lock
+thread-*.patch.yml
+headless.patch.yml
+dist/
