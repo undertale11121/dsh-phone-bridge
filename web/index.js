@@ -800,15 +800,42 @@ export function matchSession(live, want) {
 }
 
 // 用户要的「另一端没有对应对话就新建」：在这里真的把会话开出来。
-// DSH 不许插件凭空建会话，但宿主进程里有 agents.create（AgentLoop 的工厂），
-// 我们就在宿主半调用它 —— agentOptions 留空表示沿用默认模型。
+// 新会话的模型：agents.create 不会自己继承默认模型，agentOptions 空着会报
+// 「has no provider/model」。从本机 profile 的 agent-default-model 里读。
+export function defaultModel() {
+  const dir = path.join(dshHome(), 'profiles')
+  let names = []
+  try {
+    names = fs.readdirSync(dir)
+  } catch {
+    return null
+  }
+  for (const name of names) {
+    let text = ''
+    try {
+      text = fs.readFileSync(path.join(dir, name, 'cordis.patch.yml'), 'utf8')
+    } catch {
+      continue
+    }
+    const match = text.match(
+      /- id: agent-default-model[\s\S]{0,600}?provider:\s*['"]?([\w.-]+)['"]?[\s\S]{0,200}?model:\s*['"]?([\w.:-]+)['"]?/
+    )
+    if (match) return { provider: match[1], model: match[2] }
+  }
+  return null
+}
+
+// DSH 不许插件凭空建会话，但宿主进程里有 agents.create（AgentLoop 的工厂）。
+// 两个坑：① 不给 meta.cwd 会落到 _no-cwd，App 打开就是「同步中断」；
+// ② 不给 agentOptions.provider/model 会报「has no provider/model」，一跑就出错。
 async function createFreshSession() {
   const agents = agentsRef
   if (!agents || typeof agents.create !== 'function') {
     throw new Error('这台电脑上的 DSH 不支持自动新开会话（agents.create 不可用）')
   }
   const id = `session-${crypto.randomUUID()}`
-  await agents.create({ sessionId: id, agentOptions: {} })
+  const agentOptions = defaultModel() || {}
+  await agents.create({ sessionId: id, meta: { cwd: process.cwd() }, agentOptions })
   return id
 }
 
@@ -1244,7 +1271,11 @@ async function ensureDesktopSession(agents, live, desktopId) {
   if (typeof agents?.create !== 'function') throw new Error('这台引擎不支持自动新开会话（agents.create 不可用）')
   // 映射里记着但会话已经不在了（应用重启过）——复用同一个 id 重新建，别让对话越开越多
   const id = known && /^session-/.test(known) ? known : `session-${crypto.randomUUID()}`
-  await agents.create({ sessionId: id, agentOptions: {} })
+  // 会话头里必须有 cwd，否则 DSH 会把它丢进 _no-cwd，App 打开就是「同步中断」；
+  // agentOptions 还必须给 provider/model，否则一跑就是「has no provider/model」。
+  const cwd = live.map((row) => row && row.cwd).find((value) => typeof value === 'string' && value.startsWith('/')) || process.cwd()
+  const agentOptions = defaultModel() || {}
+  await agents.create({ sessionId: id, meta: { cwd }, agentOptions })
   writeJson(peerLinksPath(), { ...links, [desktopId]: id })
   console.log(`[phone-bridge] 电脑会话 ${String(desktopId).replace(/^session-/, '').slice(0, 8)} → 手机会话 ${id.replace(/^session-/, '').slice(0, 8)}`)
   return { id }
@@ -1400,6 +1431,15 @@ function installInbox(ctx) {
   if (!isPhone()) return
   if (typeof ctx.inject !== 'function') return
   ctx.inject(['agents'], (scope) => {
+    // 收件器出问题最难查：定时器里的错误会被吞掉，界面上只看到「消息没来」。
+    // 所以启动和每次失败都留一行在 bridge 目录，出事了直接看文件。
+    const notePath = () => path.join(bridgeDir(), 'inbox-boot.log')
+    const note = (text) => {
+      try {
+        fs.appendFileSync(notePath(), `${new Date().toISOString()} ${text}\n`)
+      } catch {}
+    }
+    note('收件器已启动（agents 已注入）')
     let busy = false
     let lastReport = 0
     const start = () => {
@@ -1410,7 +1450,9 @@ function installInbox(ctx) {
           .then((next) => {
             lastReport = next
           })
-          .catch(() => {})
+          .catch((error) => {
+            note(`这一轮失败: ${error?.stack || error}`)
+          })
           .finally(() => {
             busy = false
           })

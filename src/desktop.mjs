@@ -1711,14 +1711,17 @@ export async function runDesktopMcp() {
       // 不给 to 就发给「对端模型」本身，而不是广播：对端收件器只认发给自己的
       // 消息（to === 'phone' / 'desktop'），广播的话它不会投递、也就不会唤醒。
       const to = String(args?.to || defaultPeerTarget())
-      const row = threadAppend('desktop', args?.text, to, { level: args?.level, desktopId: args?.from })
+      // 模型不知道自己开在哪个会话里（MCP 没有 caller 这个概念），所以没传 from 时
+      // 用宿主半刚写下的「最近活跃会话」当来源。否则对端只能兜底投到默认会话，
+      // 用户看到的现象就是「在别的会话里说话，消息却全灌进插件那个对话」。
+      const guessed = args?.from ? '' : readJson(path.join(bridgeDir(), 'live.json'), {})?.sessions?.[0]?.id
+      const desktopId = args?.from ? String(args.from) : guessed || undefined
+      const row = threadAppend('desktop', args?.text, to, { level: args?.level, desktopId })
       const peer = to === 'all' ? '所有人（不会唤醒对端）' : nameOf(to)
       const mark = LEVELS[row.level]?.mark ? `${LEVELS[row.level].mark} ` : ''
-      // 没带 from 的时候对端只能兜底投到默认会话，用户看到的现象是「又全灌进同一个对话」，
-      // 很难分辨是没传还是没实现 —— 所以在返回值里直接说清。
-      const fromId = args?.from ? String(args.from).replace(/^session-/, '').slice(0, 8) : ''
+      const fromId = desktopId ? String(desktopId).replace(/^session-/, '').slice(0, 8) : ''
       const origin = fromId
-        ? `来自 ${fromId} 的会话`
+        ? `来自 ${fromId} 的会话${args?.from ? '' : '（按最近活跃会话推断，要指定就传 from）'}`
         : '没带 from（对端会投到默认会话，不同会话的对话会串在一起）'
       return `${mark}已发出（第 ${row.seq} 条 → ${peer}，${origin}，重要性 ${LEVELS[row.level]?.label || '普通'}）。对方收件器几秒内会把它投进开着的会话并唤醒模型；要当场等回话用 agent_converse。`
     },
