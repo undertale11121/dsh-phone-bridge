@@ -1177,7 +1177,7 @@ function sendJson(res, code, value) {
 // 窗口不能太窄：手机和电脑的时钟实测能差两个多小时（手机没走 NTP），5 分钟的
 // 窗口会让手机的每个签名请求都被判过期，表现得像「连不上但也不报错」。
 // 局域网 + token + 签名本身已经够，这里放宽到 6 小时，只用来挡陈年重放。
-function authFresh(auth, windowMs = 6 * 60 * 60_000) {
+export function authFresh(auth, windowMs = 6 * 60 * 60_000) {
   const ts = Number(auth?.ts)
   return Number.isFinite(ts) && Math.abs(Date.now() - ts) <= windowMs
 }

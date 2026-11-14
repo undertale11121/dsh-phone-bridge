@@ -47,8 +47,8 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node test/gate.mjs && node test/gate-phone.mjs && node test/web.mjs && node test/render.mjs && node test/rotate.mjs && node test/links.mjs",
-    "test:all": "node test/gate.mjs && node test/gate-phone.mjs && node test/web.mjs && node test/rotate.mjs && node test/render.mjs && node test/auto.mjs && node test/pair.mjs && node test/qr.mjs && node test/links.mjs && node test/thread.mjs && node test/e2e.mjs && node test/agents.mjs",
+    "test": "node test/auth.mjs && node test/gate.mjs && node test/gate-phone.mjs && node test/web.mjs && node test/render.mjs && node test/rotate.mjs && node test/links.mjs",
+    "test:all": "node test/auth.mjs && node test/gate.mjs && node test/gate-phone.mjs && node test/web.mjs && node test/rotate.mjs && node test/render.mjs && node test/auto.mjs && node test/pair.mjs && node test/qr.mjs && node test/links.mjs && node test/thread.mjs && node test/e2e.mjs && node test/agents.mjs",
     "test:pair": "node test/pair.mjs",
     "doctor": "node bridge.mjs doctor",
     "patch": "node bridge.mjs print-patch",
