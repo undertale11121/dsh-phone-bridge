@@ -1109,9 +1109,13 @@ export function listLiveSessions(agents) {
     // agent 对象上没有扁平 cwd，真正的目录挂在 session.header.cwd 上
     const header = item?.session?.header || item?.header || {}
     const known = named[String(id)] || {}
+    // agent 对象上没有 at/updatedAt 这些字段（实测全是 undefined，排序会全部并列 0），
+    // 真正反映「这个会话最近有没有人说话」的是 projcache 文件的 mtime。
+    // 来源会话要靠它推断，所以这里用两者取大。
+    const touched = Number(item?.at || item?.updatedAt || item?.lastActivity || 0) || 0
     rows.push({
       id: String(id),
-      at: Number(item?.at || item?.updatedAt || item?.lastActivity || 0) || 0,
+      at: Math.max(touched, sessionMeta(String(id)).at || 0),
       cwd: String(item?.cwd || header.cwd || known.cwd || ''),
       title: sessionTitle(id) || String(item?.title || header.title || ''),
       name: String(known.name || ''),
