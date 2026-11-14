@@ -640,6 +640,9 @@ function bindLiveTarget(agents) {
 }
 
 function installWake(ctx) {
+  // 桌面半的活：把手机上发来的话投进电脑会话。手机半由 installInbox 接手，
+  // 两边各管一个方向，不然同一句话会被投两次。
+  if (isPhone()) return
   if (typeof ctx.inject !== 'function') return
   ctx.inject(['agents'], (scope) => {
     agentsRef = scope.agents
