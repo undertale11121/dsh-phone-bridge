@@ -77,6 +77,7 @@ function __buildPhoneBridge(require) {
         collabDesktop: '电脑上哪个会话',
         collabPhone: '手机上哪个会话',
         collabNone: '（还没选）',
+        sessionClosed: '（未打开）',
         liveTitle: '电脑上开着的会话',
         liveNone: '电脑上现在没有开着的会话',
         phoneNone: '手机上还没报上来说开着的会话（手机要跑新版插件）',
@@ -133,6 +134,7 @@ function __buildPhoneBridge(require) {
         collabDesktop: 'Desktop session',
         collabPhone: 'Phone session',
         collabNone: '(none yet)',
+        sessionClosed: ' (closed)',
         liveTitle: 'Sessions open on this desktop',
         liveNone: 'Nothing is open on this desktop right now',
         phoneNone: 'The phone has not reported its sessions yet (it needs the newer build)',
@@ -462,7 +464,7 @@ function __buildPhoneBridge(require) {
         // 东西没有区别。
         if (!onPhone && state) {
           var collab = state.collab || {}
-          var live = state.live || []
+          var live = state.allSessions || state.live || []
           var phoneRows = (state.agents || []).filter(function (item) {
             return item && item.kind === 'session' && item.host === 'phone'
           })
@@ -501,6 +503,8 @@ function __buildPhoneBridge(require) {
                     var folder = String(item.cwd || '').split(/[\\/]/).filter(Boolean).pop() || ''
                     var label = item.title || item.name || folder || '会话'
                     if (item.title && item.name && item.name !== item.title) label += ' · ' + item.name
+                    // 没开着的会话收不到消息：选它是可以的，但要让人知道它现在收不到
+                    if (item.open === false) label += t.sessionClosed
                     return h('option', { key: item.id, value: item.id, title: item.cwd || item.id }, label)
                   }),
                 ),

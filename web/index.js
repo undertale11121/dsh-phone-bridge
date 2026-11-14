@@ -273,6 +273,8 @@ async function snapshot() {
     registry: sessionRows(),
     // 引擎里正开着的会话（内存态，重启就没了）。排查「为什么没投出去」时看这个。
     live: listLiveSessions(),
+    // 所有会话（含没开着的），面板下拉用这个，否则只有一个选项可选。
+    allSessions: listAllSessions(),
     // 协作对：电脑会话 × 手机会话，面板上两排下拉读写它。
     collab: readCollab(config),
     agents: readAgents(),
@@ -705,28 +707,80 @@ async function wakeTick(agents) {
 // 了某个 id，就仍以那个 id 为准（它在就投它）。
 // 会话在左侧栏显示的名字（就是「安装 dsh-phone-bridge 插件」那种），存在
 // projcache 的 record.rows.title 里；运行中的 agent 对象上没有它。
-const titleCache = new Map()
-function sessionTitle(id) {
+const metaCache = new Map()
+function sessionMeta(id) {
   const key = String(id || '')
-  if (!key) return ''
+  const empty = { title: '', cwd: '', at: 0 }
+  if (!key) return empty
   const file = path.join(dshHome(), 'storages', 'session_projcache', 'sessions', `${key}.json`)
   let stamp = 0
   try {
     stamp = fs.statSync(file).mtimeMs
   } catch {
-    return ''
+    return empty
   }
-  const hit = titleCache.get(key)
+  const hit = metaCache.get(key)
   if (hit && hit.stamp === stamp) return hit.value
-  let value = ''
+  let value = empty
   try {
     const data = JSON.parse(fs.readFileSync(file, 'utf8'))
-    value = String(data?.record?.rows?.title?.val || '')
+    const record = data?.record || {}
+    value = {
+      title: String(record?.rows?.title?.val || ''),
+      cwd: String(record?.identity?.cwd || ''),
+      at: Number(record?.identity?.createdAt || 0) || 0,
+    }
   } catch {
-    value = ''
+    value = empty
   }
-  titleCache.set(key, { stamp, value })
+  metaCache.set(key, { stamp, value })
   return value
+}
+
+function sessionTitle(id) {
+  return sessionMeta(id).title
+}
+
+// 全部会话（不只是开着的）。面板上要能挑历史会话，否则只有一个选项。
+// open 表示这个会话此刻开在引擎里——投递只对 open 的会话有效。
+export function listAllSessions() {
+  const dir = path.join(dshHome(), 'storages', 'session_projcache', 'sessions')
+  let names = []
+  try {
+    names = fs.readdirSync(dir)
+  } catch {
+    return []
+  }
+  const live = new Map(listLiveSessions().map((row) => [row.id, row]))
+  let named = {}
+  try {
+    named = readRegistry().sessions || {}
+  } catch {
+    named = {}
+  }
+  const rows = []
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue
+    const id = name.slice(0, -5)
+    if (!/^session-[0-9a-f-]+$/i.test(id)) continue
+    const meta = sessionMeta(id)
+    const liveRow = live.get(id)
+    // 完全空白的会话（没标题又没开着）不占位置
+    if (!meta.title && !liveRow) continue
+    // 子智能体的会话 cwd 在 .dsh\profiles\ 下面，不是人开的，别混进下拉
+    if (/[\\/]\.dsh[\\/]profiles[\\/]/i.test(String(meta.cwd || liveRow?.cwd || ''))) continue
+    const known = named[id] || {}
+    rows.push({
+      id,
+      title: meta.title || liveRow?.title || '',
+      cwd: liveRow?.cwd || meta.cwd || known.cwd || '',
+      name: String(known.name || ''),
+      at: Number(liveRow?.at || meta.at) || 0,
+      open: Boolean(liveRow),
+    })
+  }
+  rows.sort((a, b) => (Number(b.open) - Number(a.open)) || (b.at - a.at))
+  return rows
 }
 
 export function listLiveSessions(agents) {
