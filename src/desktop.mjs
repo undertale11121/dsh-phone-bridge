@@ -217,6 +217,12 @@ class DesktopBridge {
     this.pairWindowUntil = 0
     this.code = null
     this.pendingPair = null
+    // 重启别把已经配对的手机当成陌生设备。devices 里记着就恢复出来，
+    // 否则 /health 会一直 online:false，而手机其实在正常轮询——所有需要
+    // 主动连手机的工具（peer_run / phone_tools / peer_put …）都会误报
+    // 「手机还没连上」。
+    const known = (config.devices || [])[config.devices.length - 1]
+    if (known) this.device = { ...known, lastSeen: undefined }
   }
 
   get online() {
@@ -445,6 +451,7 @@ class DesktopBridge {
       if (!ok) return sendJson(res, 401, { ok: false })
       const wait = Math.min(Number(url.searchParams.get('wait') || 25000) || 25000, 60000)
       const wasOnline = this.online
+      this.markSeen(auth.id)
       this.lastPoll = Date.now()
       if (!wasOnline && this.device) {
         // One line per connect event, so a sleeping desktop model reading the
@@ -540,6 +547,9 @@ class DesktopBridge {
         const sender = known ? from : from === 'desktop' ? 'desktop' : from === 'phone' ? 'phone' : ''
         if (!sender) return sendJson(res, 400, { ok: false, error: `不认识的 agent：${from}` })
         const to = String(body?.to || 'all').slice(0, 40)
+        // 手机往工作台写消息也算「还活着」：它可能只发消息不轮询（切后台、
+        // 换网络），这时 online 不该翻成 false。
+        if (sender !== 'desktop') this.markSeen(body?.auth?.id)
         const row = threadAppend(sender, body?.text, to)
         const label = known?.name || (sender === 'desktop' ? '电脑模型' : '手机模型')
         log(`对话 +1（${label}${to !== 'all' ? ` → ${to}` : ''}）：${truncate(row.text, 90)}`)
@@ -1129,10 +1139,13 @@ export function desktopTools(bridge) {
     {
       name: 'peer_say',
       description:
-        '在「共享工作台」上给手机端的模型留一条消息（不执行任务，只是说话）。手机模型下一次开口时会看到上下文，可以回话、提问、报告进度。适合和对方商量怎么分工。',
+        '给对端模型发一句话，并立刻唤醒它一次（不执行任务，只是说话）：对方那边的收件器会在几秒内把这条投进它开着的会话。默认发给对端模型本人；要发给某个具体会话就写 phone:<会话名> / desktop:<会话名>。',
       inputSchema: {
         type: 'object',
-        properties: { text: { type: 'string', description: '要对手机模型说的话' } },
+        properties: {
+          text: { type: 'string', description: '要对对方模型说的话' },
+          to: { type: 'string', description: '收件人：省略=对端模型；也可写 phone / phone:<会话名> / desktop / desktop:<会话名>' },
+        },
         required: ['text'],
         additionalProperties: false,
       },
@@ -1522,9 +1535,12 @@ export async function runDesktopMcp() {
       return `${lines.join('\n')}\n\n用 agent_send / agent_converse 指定 id 对话；要加人手用 agent_spawn。`
     },
     async agent_send(args) {
-      const to = String(args?.to || 'all')
+      // 不给 to 就发给「对端模型」本身，而不是广播：对端收件器只认发给自己的
+      // 消息（to === 'phone' / 'desktop'），广播的话它不会投递、也就不会唤醒。
+      const to = String(args?.to || defaultPeerTarget())
       const row = threadAppend('desktop', args?.text, to)
-      return `已发出（第 ${row.seq} 条 → ${to === 'all' ? '所有人' : nameOf(to)}）。对方下次运行时能看到；要立刻等回话用 agent_converse。`
+      const peer = to === 'all' ? '所有人（不会唤醒对端）' : nameOf(to)
+      return `已发出（第 ${row.seq} 条 → ${peer}）。对方收件器几秒内会把它投进开着的会话并唤醒模型；要当场等回话用 agent_converse。`
     },
     async agent_converse(args) {
       const to = String(args?.to || 'phone')
@@ -1897,6 +1913,14 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
     dropLock()
     process.exit(0)
   })
+}
+
+// 对端是谁：跑在 Android 上就是手机（对端=桌面），否则是桌面（对端=手机）。
+// say 不给 to 时用它决定默认收件人 —— 只有发给「对端模型本人」的消息才会被
+// 对方收件器认领并触发唤醒，广播（all）不会。
+function defaultPeerTarget() {
+  const android = process.platform === 'android' || fs.existsSync('/sdcard')
+  return android ? 'desktop' : 'phone'
 }
 
 // Windows has no bash by default: pick a shell that exists. A missing binary
