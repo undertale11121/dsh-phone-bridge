@@ -1230,21 +1230,23 @@ async function reportPhoneSessions(agents, base, token) {
 }
 
 const lastSourcePath = () => path.join(bridgeDir(), 'last-desktop.json')
+// peerLinks 单独存一个文件：phone.json 是手机 bridge 在维护的，它一写就把我们塞进去的
+// 字段覆盖掉（实测第一版就是这样丢的）。
+const peerLinksPath = () => path.join(bridgeDir(), 'peer-links.json')
+const readPeerLinks = () => readJson(peerLinksPath(), null) || (readJson(phoneConfigPath(), {}) || {}).peerLinks || {}
 
 // 手机侧按「来源电脑会话」分身：一个电脑会话对应一个手机会话。
-// 第一次收到某个电脑会话的消息就新建一个，映射记在 phone.json.peerLinks
-// （手机本地，不碰 desktop.json，免得两端互相覆盖）。
+// 第一次收到某个电脑会话的消息就新建一个，映射记在 peer-links.json（手机本地）。
 async function ensureDesktopSession(agents, live, desktopId) {
-  const cfg = readJson(phoneConfigPath(), {}) || {}
-  const known = (cfg.peerLinks || {})[desktopId]
+  const links = readPeerLinks() || {}
+  const known = links[desktopId]
   if (known && live.some((row) => row.id === known)) return { id: known }
   if (typeof agents?.create !== 'function') throw new Error('这台引擎不支持自动新开会话（agents.create 不可用）')
-  const id = `session-${crypto.randomUUID()}`
+  // 映射里记着但会话已经不在了（应用重启过）——复用同一个 id 重新建，别让对话越开越多
+  const id = known && /^session-/.test(known) ? known : `session-${crypto.randomUUID()}`
   await agents.create({ sessionId: id, agentOptions: {} })
-  const next = readJson(phoneConfigPath(), {}) || {}
-  next.peerLinks = { ...(next.peerLinks || {}), [desktopId]: id }
-  writeJson(phoneConfigPath(), next)
-  log(`给电脑会话 ${String(desktopId).replace(/^session-/, '').slice(0, 8)} 开了一个手机会话 ${id.slice(0, 8)}`)
+  writeJson(peerLinksPath(), { ...links, [desktopId]: id })
+  log(`电脑会话 ${String(desktopId).replace(/^session-/, '').slice(0, 8)} → 手机会话 ${id.replace(/^session-/, '').slice(0, 8)}`)
   return { id }
 }
 
