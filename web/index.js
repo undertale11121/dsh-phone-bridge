@@ -825,6 +825,9 @@ export function defaultModel() {
     return null
   }
   for (const name of names) {
+    // 备份/临时 profile（desktop.backup-20261017-225734 这类）不算数：
+    // 它可能带着一个早就换掉的模型配置，按 readdir 顺序挑到它就会用错模型。
+    if (/\.(backup|bak)([-.]|$)/i.test(name)) continue
     let text = ''
     try {
       text = fs.readFileSync(path.join(dir, name, 'cordis.patch.yml'), 'utf8')
@@ -996,9 +999,11 @@ async function wakeTick(agents) {
     let sessionId = pickByPinned?.id || live[0]?.id || ''
     if (named) {
       // 点名的会话：先按 id / 裸 uuid / 左边栏标题认，再退到会话目录里的名字。
-      // 名字找不到就退回到「开着的那个」，消息不能丢
-      const row = matchSession(live, named) || resolveNamed(named)
-      sessionId = row ? row.id : pickByPinned?.id || live[0]?.id || ''
+      // 注意 resolveNamed 只查 registry，可能命中一个已经关掉的会话 —— 投进去必失败，
+      // 所以命中后还要确认它真的开在引擎里，否则退回「开着的那个」，消息不能丢。
+      const matched = matchSession(live, named) || resolveNamed(named)
+      const alive = matched && live.some((row) => row.id === matched.id)
+      sessionId = alive ? matched.id : pickByPinned?.id || live[0]?.id || ''
     }
     if (!sessionId) {
       // 一个会话都没开着：**cursor 不前进**，下次再试；消息留在工作台上不丢。
