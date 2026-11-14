@@ -422,6 +422,46 @@ function sessionRows() {
     .sort((a, b) => String(b.at).localeCompare(String(a.at)))
 }
 
+// 会话目录（registry.json）本来只靠 MCP 半的 caller.sessionId 被动登记，但
+// DSH 的 MCP 客户端从来不告诉 server 是哪个会话在调 —— 于是 registry 永远
+// 是空的，session_list / session_note 变成死功能。宿主半能直接枚举活会话，
+// 所以由它把开着的会话补进同一份 registry；名字和用途仍归模型自己写，这里
+// 只补第一次，不覆盖。
+function syncRegistry(agents) {
+  let rows = []
+  try {
+    rows = listLiveSessions(agents)
+  } catch {
+    return
+  }
+  if (!rows.length) return
+  const data = readRegistry()
+  if (!data.sessions) data.sessions = {}
+  const now = new Date().toISOString()
+  let changed = false
+  for (const row of rows) {
+    const id = String(row.id || '')
+    if (!id || data.sessions[id]) continue
+    const cwd = String(row.cwd || '')
+    data.sessions[id] = {
+      id,
+      name: (cwd ? path.basename(cwd) : '') || id.slice(0, 8),
+      cwd,
+      host: 'desktop',
+      at: now,
+      ast: now,
+      calls: 0,
+    }
+    changed = true
+  }
+  if (!changed) return
+  try {
+    writeJson(registryPath(), data)
+  } catch {
+    // 登记失败不能影响唤醒
+  }
+}
+
 // "登录页" / "3f9a2b1c" / 用途里的词 → 一个会话
 export function resolveNamed(name) {
   const wanted = String(name || '').trim().toLowerCase()
@@ -545,6 +585,12 @@ async function wakeTick(agents) {
   const config = readConfig()
   const wake = readWake(config)
   const state = readWakeState()
+  // 先把开着的会话补进会话目录，session_list / session_note 才有的可选
+  try {
+    if (wake.enabled || config.token) syncRegistry(agents)
+  } catch {
+    // 目录登记失败不影响唤醒
+  }
   if (!wake.enabled || !config.token) return
 
   // 首次启动：把 cursor 对齐到「现在最后一条」，一条历史都不投。
