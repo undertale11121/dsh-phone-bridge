@@ -264,7 +264,7 @@ async function snapshot() {
         if (row && row.name) return row.name
         const liveRow = listLiveSessions().find((item) => item.id === id)
         const base = liveRow?.cwd ? path.basename(liveRow.cwd) : ''
-        return base ? `${base} · ${id.slice(0, 8)}` : id.slice(0, 8)
+        return base || id.replace(/^session-/, '').slice(0, 8)
       })(),
       active: readActive(),
     },
@@ -705,15 +705,26 @@ async function wakeTick(agents) {
 export function listLiveSessions(agents) {
   const handle = agents || agentsRef
   const rows = []
+  // 会话的名字是人起的（session_note），挂在 registry 里；下拉要显示名字而不是
+  // 「D:\... · 0e47a423」这种代码，所以这里顺手带出来。
+  let named = {}
+  try {
+    named = readRegistry().sessions || {}
+  } catch {
+    named = {}
+  }
   const push = (id, item) => {
     if (!id) return
     // agent 对象上没有扁平 cwd，真正的目录挂在 session.header.cwd 上
     const header = item?.session?.header || item?.header || {}
+    const known = named[String(id)] || {}
     rows.push({
       id: String(id),
       at: Number(item?.at || item?.updatedAt || item?.lastActivity || 0) || 0,
-      cwd: String(item?.cwd || header.cwd || ''),
+      cwd: String(item?.cwd || header.cwd || known.cwd || ''),
       title: String(item?.title || header.title || ''),
+      name: String(known.name || ''),
+      purpose: String(known.purpose || ''),
     })
   }
   const feed = (value) => {

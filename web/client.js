@@ -348,7 +348,7 @@ function __buildPhoneBridge(require) {
             h('div', { style: Object.assign({}, muted, { padding: '2px 0 6px' }) }, t.wakeHint),
             h('div', { style: Object.assign({}, row, { padding: '2px 0' }) },
               h('span', { style: muted }, t.wakeTarget),
-              h('span', { style: mono }, wakeTarget ? (wake.targetName ? wake.targetName + ' · ' + wakeTarget.replace(/^session-/, '').slice(0, 8) : wakeTarget.replace(/^session-/, '').slice(0, 8) + '…') : t.wakeNone),
+              h('span', { style: mono }, wakeTarget ? (wake.targetName || wakeTarget.replace(/^session-/, '').slice(0, 8)) : t.wakeNone),
             ),
             wake.ready === false
               ? h('div', { style: Object.assign({}, muted, { color: 'var(--dsw-alias-accent-red, #f28b82)' }) }, t.wakeNotReady)
@@ -497,8 +497,11 @@ function __buildPhoneBridge(require) {
                 },
                   h('option', { value: '' }, t.collabNone),
                   live.map(function (item) {
-                    var label = (item.title || item.cwd || '会话') + ' · ' + String(item.id).replace(/^session-/, '').slice(0, 8)
-                    return h('option', { key: item.id, value: item.id }, label)
+                    // 显示人起的名字，不要再出现 session-xxxx / 长路径这种代码
+                    var folder = String(item.cwd || '').split(/[\\/]/).filter(Boolean).pop() || ''
+                    var label = item.name || item.title || folder || '会话'
+                    if (item.name && folder && item.name !== folder) label += ' · ' + folder
+                    return h('option', { key: item.id, value: item.id, title: item.cwd || item.id }, label)
                   }),
                 ),
                 live.length ? null : h('div', { style: muted }, t.liveNone),
@@ -512,8 +515,8 @@ function __buildPhoneBridge(require) {
                 },
                   h('option', { value: '' }, t.collabNone),
                   phoneRows.map(function (item) {
-                    var label = (item.name || '手机会话') + ' · ' + String(item.id).replace(/^psess:/, '').slice(0, 8)
-                    return h('option', { key: item.id, value: String(item.id).replace(/^psess:/, '') }, label)
+                    var label = item.name || (item.title || '手机会话')
+                    return h('option', { key: item.id, value: String(item.id).replace(/^psess:/, ''), title: item.cwd || String(item.id).replace(/^psess:/, '') }, label)
                   }),
                 ),
                 phoneRows.length ? null : h('div', { style: muted }, t.phoneNone),
