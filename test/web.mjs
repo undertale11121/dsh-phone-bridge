@@ -115,10 +115,10 @@ const batch = host.composeBatch([
   { from: 'phone', text: '第一条' },
   { from: 'phone', text: '第二条' },
 ], '手机模型')
-check('多条消息合成一句提示', batch.includes('手机模型 2 条') && batch.includes('开头：') === false && batch.includes('第一条') === false, batch)
+check('多条消息合成一句提示', batch.includes('手机模型 2 条') && batch.includes('第一条') && batch.split('\n').length >= 2, batch)
 check('提示里带 peer_read 的指引', batch.includes('peer_read'), batch)
 const longOne = host.composeBatch([{ from: 'phone', text: 'x'.repeat(5000) }], '手机模型')
-check('长消息在页面里只剩一行提示', longOne.length < 60 && longOne.includes('5000 字'), `${longOne.length}:${longOne}`)
+check('长消息只带摘要不贴全文', longOne.length < 600 && longOne.includes('5000 字'), `${longOne.length}:${longOne}`)
 
 const tree = []
 const fakeDocument = { documentElement: { lang: 'zh-CN' } }

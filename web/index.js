@@ -614,8 +614,9 @@ const REPLY_WAIT_MS = 120_000
 
 // 用户的原话是「可以对话发在后台，然后页面只发一点内容唤醒模型」——
 // 所以投进去的只是一句**唤醒语**：谁发的、几条、多少字、开头一小段。
-// 全文留在工作台上，模型自己调 peer_read 去拿，不占对话。
-const PEEK_CHARS = 60
+// 全文留在工作台上（peer_read 拿），但唤醒语里带一小段原文——两个模型要
+// 商量着干活，光看到「N 条」不知道对方要什么，结果就是各干各的。
+const PEEK_CHARS = 200
 
 // 「（手机已连上电脑）」这类是桥接自己写的系统通知，不是模型说的话。
 // 拿它去唤醒对端模型，就会得到「手机 1 条（9 字）」这种莫名其妙的消息。
@@ -624,6 +625,8 @@ export function isNotice(text) {
   const plain = String(text == null ? '' : text).trim()
   return plain.length <= 60 && NOTICE_RE.test(plain)
 }
+
+// 唤醒语里带多少原文：够看清对方要什么，又不会把对话流撑长。
 
 // web 半会被单独拷进 profile 的 node_modules，不能 import ../src/*，所以这里放一份
 // 本地的时间格式化（与 src/util.mjs 的 clockOf 保持一致）。
@@ -638,14 +641,19 @@ export function composeBatch(incoming, who) {
   const rows = Array.isArray(incoming) ? incoming : []
   if (!rows.length) return ''
   const total = rows.reduce((sum, item) => sum + String(item?.text == null ? '' : item.text).length, 0)
-  // 页面里只留一行提示：正文留在工作台，模型要看就自己 peer_read。
-  // 之前还带「开头：<前 60 字>」，长消息在对话流里仍然占两三行，用户明确要求只提示。
   const head = rows.length > 1 ? `${who} ${rows.length} 条` : `${who} 1 条`
   // 带发送时间：两个模型对账时能看出先后和间隔，不必再去翻 thread.jsonl。
   const at = rows[rows.length - 1]?.at
   const clock = clockOf(at)
   const when = clock ? ` · ${clock}` : ''
-  return `【互联】${head}（${total} 字）${when}，peer_read 看全文再回。`
+  // 只给摘要不给全文（5000 字会把对话撑爆），但也不能只丢一句「N 条」——
+  // 两个模型要商量着干活，得先看见对方在说什么，不然就是各干各的。
+  const joined = rows.map((item) => String(item?.text == null ? '' : item.text)).join('\n')
+  const peek = joined.length > PEEK_CHARS ? `${joined.slice(0, PEEK_CHARS)}…` : joined
+  return (
+    `【互联】${head}（${total} 字）${when}\n${peek}\n` +
+    '（全文在工作台，peer_read 看完整内容；回话时顺带说一句你这边的进度，对方才知道你在干哪一半。）'
+  )
 }
 
 // 把 phone:<…> / desktop:<…> 后面那截认成一个具体会话：可以是完整 id、
