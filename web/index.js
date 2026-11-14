@@ -574,6 +574,14 @@ const REPLY_WAIT_MS = 120_000
 // 全文留在工作台上，模型自己调 peer_read 去拿，不占对话。
 const PEEK_CHARS = 60
 
+// 「（手机已连上电脑）」这类是桥接自己写的系统通知，不是模型说的话。
+// 拿它去唤醒对端模型，就会得到「手机 1 条（9 字）」这种莫名其妙的消息。
+const NOTICE_RE = /^（[^）]{0,40}已连上[^）]{0,40}）$/
+export function isNotice(text) {
+  const plain = String(text == null ? '' : text).trim()
+  return plain.length <= 60 && NOTICE_RE.test(plain)
+}
+
 export function composeBatch(incoming, who) {
   const rows = Array.isArray(incoming) ? incoming : []
   if (!rows.length) return ''
@@ -626,7 +634,11 @@ async function wakeTick(agents) {
   // 接收方向不节流：这些本来就是该我看见的消息，压住只会让对话卡住。
 
   const incoming = (data.messages || []).filter(
-    (item) => item && item.from !== 'desktop' && (item.to === 'desktop' || String(item.to || '').startsWith('desktop:')),
+    (item) =>
+      item &&
+      item.from !== 'desktop' &&
+      !isNotice(item.text) &&
+      (item.to === 'desktop' || String(item.to || '').startsWith('desktop:')),
   )
   if (!incoming.length) {
     // 没有新消息也要把 lastError 收干净，别让一条旧报错一直挂着。
@@ -987,6 +999,7 @@ async function inboxTick(agents, lastReport) {
 
   const incoming = (data?.messages || []).filter((item) => {
     if (!item || item.from === 'phone') return false
+    if (isNotice(item.text)) return false
     const to = String(item.to || '')
     return to === 'phone' || (pinned && to === `phone:${pinned}`)
   })

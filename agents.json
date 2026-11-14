@@ -65,12 +65,12 @@
     },
     {
       "id": "psess:session-523447e5-feaa-47ce-bd43-56b88e528db7",
-      "name": "workspace",
+      "name": "dsh多端模型协作插件 (1)",
       "host": "phone",
       "kind": "session",
       "note": "手机上开着的会话 · /root/workspace",
       "running": true,
-      "at": "2026-11-14T14:03:20.005Z"
+      "at": "2026-11-14T14:08:56.693Z"
     }
   ]
 }
