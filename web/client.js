@@ -260,7 +260,9 @@ function __buildPhoneBridge(require) {
         }
 
         var muted = { color: 'var(--dsw-alias-label-tertiary, rgba(127,127,127,0.8))', fontSize: 13 }
-        var row = { display: 'flex', gap: 12, justifyContent: 'space-between', padding: '5px 0', fontSize: 14 }
+        // 不用 space-between：面板右边缘会被 DSH 的装饰挂件挡住，值贴右就看不全了。
+        var row = { display: 'flex', gap: 12, alignItems: 'baseline', padding: '5px 0', fontSize: 14 }
+        var label = { color: 'var(--dsw-alias-label-tertiary, rgba(127,127,127,0.8))', fontSize: 13, minWidth: 62, flexShrink: 0 }
         var pill = { display: 'inline-block', padding: '2px 8px', borderRadius: 999, fontSize: 12, fontWeight: 600 }
         var button = {
           appearance: 'none',
@@ -369,9 +371,9 @@ function __buildPhoneBridge(require) {
         if (state && !onPhone) {
           children.push(
             h('div', { key: 'meta', style: { marginTop: 8 } },
-              h('div', { style: row }, h('span', { style: muted }, t.device), h('span', null, state.device ? state.device.name + (state.device.platform ? ' · ' + state.device.platform : '') : '—')),
-              h('div', { style: row }, h('span', { style: muted }, t.listen), h('span', { style: mono }, state.listen)),
-              h('div', { style: row }, h('span', { style: muted }, t.background), h('span', { style: mono }, state.background ? 'pid ' + state.background.pid + ' · :' + state.background.port : '—')),
+              h('div', { style: row }, h('span', { style: label }, t.device), h('span', null, state.device ? state.device.name + (state.device.platform ? ' · ' + state.device.platform : '') : '—')),
+              h('div', { style: row }, h('span', { style: label }, t.listen), h('span', { style: mono }, state.listen)),
+              h('div', { style: row }, h('span', { style: label }, t.background), h('span', { style: mono }, state.background ? 'pid ' + state.background.pid + ' · :' + state.background.port : '—')),
             ),
           )
 

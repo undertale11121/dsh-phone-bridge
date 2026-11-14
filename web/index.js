@@ -72,6 +72,11 @@ function defaults() {
   }
 }
 
+// 统一的会话短 id：session-<uuid> 直接 slice(0,8) 会得到 "session-"，界面上全都长一样。
+export function shortSession(id) {
+  return String(id || '').replace(/^session-/, '').slice(0, 8)
+}
+
 export function readConfig() {
   const existing = readJson(configPath(), null)
   const config = existing && existing.token ? { ...defaults(), ...existing } : { ...defaults(), token: crypto.randomBytes(16).toString('hex') }
@@ -206,7 +211,7 @@ function readSessions() {
     .filter(([, item]) => item && typeof item === 'object')
     .map(([name, item]) => ({
       name,
-      sessionId: String(item.sessionId || '').slice(0, 8),
+      sessionId: shortSession(item.sessionId),
       at: item.at || '',
       title: item.title || '',
     }))
@@ -257,7 +262,7 @@ async function snapshot() {
     thread: readThread(4).messages,
     toggles: Object.fromEntries(TOGGLES.map((key) => [key, config[key] !== false])),
     devices: (config.devices || []).map((item) => ({
-      id: String(item.id || '').slice(0, 8),
+      id: shortSession(item.id),
       name: item.name || '手机',
       platform: item.platform || '',
       at: item.at || '',
@@ -355,10 +360,10 @@ async function runAction(body) {
       state.lastWake = result
       state.lastError = ''
       writeWakeState(state)
-      return { text: `已把消息投进会话 ${target.slice(0, 8)}…（${result.mode}）` }
+      return { text: `已把消息投进会话 ${shortSession(target)}…（${result.mode}）` }
     }
     const auto = wake.sessionId || readActive()?.sessionId || ''
-    return { text: `唤醒：${wake.enabled ? '开' : '关'}${auto ? `，会话 ${auto.slice(0, 8)}…` : '，还没记录到会话'}` }
+    return { text: `唤醒：${wake.enabled ? '开' : '关'}${auto ? `，会话 ${shortSession(auto)}…` : '，还没记录到会话'}` }
   }
   if (body.action === 'say') {
     // 用户（或任一端模型）在面板上打一句话，直接进工作台，对端的收件器
@@ -432,7 +437,7 @@ async function runAction(body) {
     }
     patchConfig(changes)
     const parts = []
-    parts.push(collab.desktopSessionId ? `电脑会话 ${collab.desktopSessionId.slice(0, 8)}…` : '电脑会话未选')
+    parts.push(collab.desktopSessionId ? `电脑会话 ${shortSession(collab.desktopSessionId)}…` : '电脑会话未选')
     parts.push(collab.phoneSessionId ? `手机会话 ${(collab.phoneName || collab.phoneSessionId).slice(0, 16)}` : '手机会话未选')
     return { text: `协作对已保存：${parts.join(' · ')}` }
   }
@@ -504,7 +509,7 @@ function sessionRows() {
   return Object.values(readRegistry().sessions || {})
     .map((row) => ({
       id: row.id,
-      short: String(row.id).slice(0, 8),
+      short: shortSession(row.id),
       name: row.name || '',
       purpose: row.purpose || '',
       project: row.project || '',
@@ -538,7 +543,7 @@ function syncRegistry(agents) {
     const cwd = String(row.cwd || '')
     data.sessions[id] = {
       id,
-      name: (cwd ? path.basename(cwd) : '') || id.slice(0, 8),
+      name: (cwd ? path.basename(cwd) : '') || shortSession(id),
       cwd,
       host: 'desktop',
       at: now,
@@ -647,9 +652,9 @@ export async function wakeSession(agents, sessionId, text, mode = 'queue', optio
     // 但要让等待的一方知道：**是目标不在线，不是投递出错**。
     const open = listLiveSessions(agents)
     const hint = open.length
-      ? `；当前开着 ${open.length} 个会话：${open.map((row) => row.id.slice(0, 8)).join('、')}`
+      ? `；当前开着 ${open.length} 个会话：${open.map((row) => shortSession(row.id)).join('、')}`
       : '；当前一个会话都没开'
-    throw new Error(`会话 ${String(sessionId).slice(0, 8)}… 没开在引擎里${hint}。先把它切到前台，或用工牌 ID 重新指定`)
+    throw new Error(`会话 ${shortSession(sessionId)}… 没开在引擎里${hint}。先把它切到前台，或传完整 ID 重新指定`)
   }
   // 对方正在生成（一回合没跑完）时别 followup：那会排进 inbox，界面上就多出
   // 一条「等待发送」的消息气泡——用户的原话是「有时候会出现等待发送的对方模型
@@ -663,9 +668,9 @@ export async function wakeSession(agents, sessionId, text, mode = 'queue', optio
     busySince.set(sessionId, since)
     const stuckFor = Date.now() - since
     if (stuckFor < BUSY_TIMEOUT_MS) {
-      throw new Error(`会话 ${String(sessionId).slice(0, 8)}… 正忙（${status}），这条消息等它空下来再投`)
+      throw new Error(`会话 ${shortSession(sessionId)}… 正忙（${status}），这条消息等它空下来再投`)
     }
-    console.log(`[phone-bridge] 会话 ${String(sessionId).slice(0, 8)}… 报忙已 ${Math.round(stuckFor / 1000)}s，状态多半卡住了，这次强行投递`)
+    console.log(`[phone-bridge] 会话 ${shortSession(sessionId)}… 报忙已 ${Math.round(stuckFor / 1000)}s，状态多半卡住了，这次强行投递`)
     busySince.delete(sessionId)
   } else {
     busySince.delete(sessionId)
@@ -1254,7 +1259,7 @@ async function reportPhoneSessions(agents, base, token) {
         {
           agent: {
             id: `psess:${row.id}`,
-            name: row.title || path.basename(row.cwd || '') || row.id.slice(0, 8),
+            name: row.title || path.basename(row.cwd || '') || shortSession(row.id),
             host: 'phone',
             kind: 'session',
             note: `手机上开着的会话 · ${row.cwd || '目录未知'}`,
