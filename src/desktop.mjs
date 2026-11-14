@@ -86,6 +86,28 @@ function applyEnv(config) {
   return config
 }
 
+// 手机模型习惯传短 id（0e47a423）；开关必须挂在完整的 session-<uuid> 上，
+// 否则守卫能过、投递却找不到会话。名字/标题也一并认。
+export function resolveDesktopSessionId(raw) {
+  const want = String(raw == null ? '' : raw).trim()
+  if (!want) return ''
+  try {
+    const reg = readJson(path.join(bridgeDir(), 'registry.json'), {})
+    const rows = Object.values(reg?.sessions || {})
+    const exact = rows.find((row) => row.id === want)
+    if (exact) return exact.id
+    // 裸 uuid → 补前缀
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i.test(want)) return `session-${want}`
+    const byShort = rows.find((row) => String(row.id).replace(/^session-/, '').startsWith(want))
+    if (byShort) return byShort.id
+    const byName = rows.find((row) => row.name === want)
+    if (byName) return byName.id
+  } catch {
+    // 读不到目录就把原值当 id 用
+  }
+  return want
+}
+
 export function desktopLockPath() {
   return path.join(bridgeDir(), 'desktop.lock')
 }
@@ -843,14 +865,16 @@ class DesktopBridge {
     if (op === 'link') {
       const store = readJson(desktopConfigPath(), {})
       const links = store?.links && typeof store.links === 'object' ? store.links : {}
-      const desktopId = String(args?.desktopId || '').trim()
+      // 手机模型习惯传短 id（0e47a423），这里必须补成完整的 session-<uuid>，
+      // 否则开关挂在错的 key 上——守卫能过，但投递时找不到会话。
+      const desktopId = resolveDesktopSessionId(args?.desktopId)
       const phoneId = String(args?.phoneId || '').trim()
       if (!desktopId) throw new Error('要指定电脑上哪个会话（desktopId）')
       if (args?.off) delete links[desktopId]
       else links[desktopId] = { phoneId, at: new Date().toISOString() }
       store.links = links
       writeJson(desktopConfigPath(), store)
-      return { text: args?.off ? '已断开这个会话的互联' : '已把这个会话和手机连起来', links }
+      return { text: args?.off ? '已断开这个会话的互联' : `已把这个会话和手机连起来（${desktopId.slice(0, 16)}…）`, links }
     }
     if (op === 'links') {
       const store = readJson(desktopConfigPath(), {})
