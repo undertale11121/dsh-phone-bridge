@@ -46,6 +46,7 @@ import {
   setLogFile,
   readActive,
   writeActive,
+  clockOf,
 } from './util.mjs'
 import { serveMcp } from './mcp.mjs'
 import { formatSessions, listSessions, noteSession, touchSession } from './sessions.mjs'
@@ -1052,7 +1053,9 @@ function formatThread(data, { sinceSeq = 0 } = {}) {
   if (!rows.length) return '（没有新消息）'
   const lines = rows.map((row) => {
     const to = row.to && row.to !== 'all' ? ` → ${nameOf(row.to)}` : ''
-    return `${row.seq}. ${nameOf(row.from)}${to}：${truncate(row.text, 2000)}`
+    // 带发送时间：两个人（模型）对账时，谁先谁后、隔了多久，一眼就看得出来。
+    const when = row.at ? `${clockOf(row.at)} ` : ''
+    return `${row.seq}. ${when}${nameOf(row.from)}${to}：${truncate(row.text, 2000)}`
   })
   return lines.join('\n')
 }

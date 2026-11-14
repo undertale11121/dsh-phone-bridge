@@ -8,6 +8,14 @@ function __buildPhoneBridge(require) {
     var module = { exports: {} }
     var exports = module.exports
 
+    // 工作台上的每条消息都带 ISO 的 at，面板里显示成 HH:MM:SS，方便人工对账。
+    function fmtClock(at) {
+      var d = new Date(at || Date.now())
+      if (isNaN(d.getTime())) return ''
+      var pad = function (n) { return String(n).length < 2 ? '0' + n : String(n) }
+      return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds())
+    }
+
     var PACKAGE = 'dsh-phone-bridge-web'
     // The id of the sidebar row and of its `main` page. It must not collide
     // with the host's own panels (`plugins`, `dsh-market`, …).
@@ -547,7 +555,7 @@ function __buildPhoneBridge(require) {
             h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 } },
               state.thread.map(function (row) {
                 return h('div', { key: 'thread-' + row.seq, style: { fontSize: 13 } },
-                  (row.from === 'phone' ? '📱 ' : '💻 ') + String(row.text).slice(0, 160))
+                  (row.from === 'phone' ? '📱 ' : '💻 ') + (row.at ? fmtClock(row.at) + ' ' : '') + String(row.text).slice(0, 160))
               }),
             ),
             state.workbenchUrl

@@ -134,6 +134,16 @@ export function tokenEqual(a, b) {
   return crypto.timingSafeEqual(x, y)
 }
 
+// 人可读的时钟。工作台上每条消息都带 ISO 的 `at`，但模型对账时看
+// `22:31:05` 比看 `2026-11-14T14:31:05.123Z` 快得多，也不会把时区算错。
+export function clockOf(at, withDate = false) {
+  const d = new Date(at || Date.now())
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n) => String(n).padStart(2, '0')
+  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+  return withDate ? `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${time}` : time
+}
+
 export function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }

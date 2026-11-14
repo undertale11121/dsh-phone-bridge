@@ -625,6 +625,15 @@ export function isNotice(text) {
   return plain.length <= 60 && NOTICE_RE.test(plain)
 }
 
+// web 半会被单独拷进 profile 的 node_modules，不能 import ../src/*，所以这里放一份
+// 本地的时间格式化（与 src/util.mjs 的 clockOf 保持一致）。
+function clockOf(at) {
+  const d = new Date(at || Date.now())
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
 export function composeBatch(incoming, who) {
   const rows = Array.isArray(incoming) ? incoming : []
   if (!rows.length) return ''
@@ -632,7 +641,11 @@ export function composeBatch(incoming, who) {
   // 页面里只留一行提示：正文留在工作台，模型要看就自己 peer_read。
   // 之前还带「开头：<前 60 字>」，长消息在对话流里仍然占两三行，用户明确要求只提示。
   const head = rows.length > 1 ? `${who} ${rows.length} 条` : `${who} 1 条`
-  return `【互联】${head}（${total} 字），peer_read 看全文再回。`
+  // 带发送时间：两个模型对账时能看出先后和间隔，不必再去翻 thread.jsonl。
+  const at = rows[rows.length - 1]?.at
+  const clock = clockOf(at)
+  const when = clock ? ` · ${clock}` : ''
+  return `【互联】${head}（${total} 字）${when}，peer_read 看全文再回。`
 }
 
 // 把 phone:<…> / desktop:<…> 后面那截认成一个具体会话：可以是完整 id、

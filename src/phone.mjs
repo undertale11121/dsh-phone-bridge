@@ -24,6 +24,7 @@ import {
   sleep,
   writeJson,
   truncate,
+  clockOf,
 } from './util.mjs'
 import { alive, findAgent, nameOf, newAgentId } from './agents.mjs'
 import { McpChild, readToolResult, serveMcp } from './mcp.mjs'
@@ -626,7 +627,7 @@ export class PhoneBridge {
     const recent = this.threadContext(12)
     const bench = recent.length
       ? `【和电脑模型的共享工作台（最近 ${recent.length} 条）】\n` +
-        recent.map((row) => `${row.seq}. ${row.from === 'desktop' ? '电脑模型' : '手机模型'}：${row.text}`).join('\n') +
+        recent.map((row) => `${row.seq}. ${clockOf(row.at)} ${row.from === 'desktop' ? '电脑模型' : '手机模型'}：${row.text}`).join('\n') +
         '\n（你可以用 peer_say 说话、peer_converse 提问并等回复、peer_read 看历史。有拿不准的地方就问电脑模型，不要自己猜。）\n\n'
       : '（你可以用 peer_say / peer_converse 和电脑模型商量；拿不准就问。）\n\n'
     cliArgs.push('--json', bench + String(args.prompt))
@@ -1751,13 +1752,16 @@ export async function runPhoneMcp({ withMcp = true } = {}) {
       const rows = await bridge.sessions()
       if (!rows.length) return '电脑上还没记住会话。让电脑模型随便用一次互联工具（比如 peer_info）就会自动登记。'
       const lines = rows.map((row) => {
-        const bits = [`${row.short} · ${row.name || '未命名'}${row.active ? '（当前）' : ''}`]
+        // 这张表是**电脑那边**的目录（经桥接服务 /sessions 取回），
+        // 标清机器，否则和自己这边的会话混在一起，点名会点错。
+        const where = row.host === 'phone' ? '手机上' : '电脑上'
+        const bits = [`${row.short} · ${row.name || '未命名'} · ${where}${row.active ? '（当前）' : ''}`]
         if (row.purpose) bits.push(`  ${row.purpose}`)
         if (row.project) bits.push(`  项目 ${row.project}`)
         bits.push(`  ${row.calls || 0} 次调用${row.at ? `，最近 ${String(row.at).slice(5, 16).replace('T', ' ')}` : ''}`)
         return bits.join('\n')
       })
-      return `${lines.join('\n')}\n\n发消息时 to 写 desktop:<名字> 就能直接找那个会话。`
+      return `${lines.join('\n')}\n\n这张表是电脑上的会话；发消息时 to 写 desktop:<名字> 或 desktop:<短 id> 就能直接找它。`
     },
     async bridge_note(args) {
       const result = await bridge.noteSession(args)
@@ -1773,7 +1777,7 @@ export async function runPhoneMcp({ withMcp = true } = {}) {
       const data = await bridge.readThread(Number(args?.since || 0), 0)
       const rows = (data?.messages || []).slice(0, Number(args?.limit || 40))
       if (!rows.length) return '工作台上还没有对话。'
-      return rows.map((row) => `${row.seq}. ${row.from === 'desktop' ? '电脑模型' : '手机模型'}：${row.text}`).join('\n')
+      return rows.map((row) => `${row.seq}. ${clockOf(row.at)} ${row.from === 'desktop' ? '电脑模型' : '手机模型'}：${row.text}`).join('\n')
     },
     async phone_test(args) {
       if (!args?.goal) throw new Error('缺少 goal')
@@ -1908,7 +1912,7 @@ export async function runPhoneMcp({ withMcp = true } = {}) {
           { key: 'pair', label: '配对串（可选）', placeholder: 'dshphone://192.168.1.5:8787/xxxx' },
         ],
         link: s.connected && bridge.endpoint ? { href: `${bridge.endpoint}/workbench?t=${bridge.config.token}`, label: '打开「两个模型的对话」' } : null,
-        log: bench.map((row) => `${row.seq}. ${row.from === 'desktop' ? '电脑模型' : '手机模型'}：${row.text}`),
+        log: bench.map((row) => `${row.seq}. ${clockOf(row.at)} ${row.from === 'desktop' ? '电脑模型' : '手机模型'}：${row.text}`),
         buttons: [
           { id: 'find', label: '找附近的电脑', primary: true },
           { id: 'agent.list', label: '看有哪些 agent' },
