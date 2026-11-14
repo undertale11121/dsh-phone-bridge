@@ -602,9 +602,25 @@ function __buildPhoneBridge(require) {
               '按钮在会话界面右上角工具栏。这里没有任何 ✓ 说明这个 DSH 版本的会话插槽对第三方插件不开放，那就只能走这个侧栏面板。')))
           children.push(h('div', { key: 'collab', style: card },
             h('div', { style: cardTitle }, t.collab),
-            // 手机没连上时先说明白下一步，别只让下拉空着。
-            paired ? null : h('div', { style: Object.assign({}, muted, { padding: '2px 0 6px' }) },
-              '手机现在没连上。把上面的配对串发到手机对话里执行 bridge_pair，或者等它自动重连。'),
+            // 手机没连上时给出可操作的排查步骤（最常见的三种原因）。
+            paired ? null : h('div', { style: Object.assign({}, muted, { padding: '2px 0 6px', lineHeight: 1.75 }) },
+              h('div', { style: { color: 'var(--dsw-alias-accent-red, #e5484d)', marginBottom: 4 } },
+                '手机现在没连上。按顺序查这三步：'),
+              h('div', {}, '① 手机和电脑连的是同一个 WiFi'),
+              h('div', {}, '② 电脑防火墙放行 8787 端口（管理员 PowerShell 跑一次，命令在下面）'),
+              h('div', {}, '③ 手机上 DSH Go 开着，并且点过「连电脑」')),
+            paired ? null : h('div', {
+              style: {
+                fontSize: 11,
+                fontFamily: 'ui-monospace, Consolas, monospace',
+                background: 'rgba(127,127,127,0.12)',
+                padding: '7px 9px',
+                borderRadius: 6,
+                marginBottom: 9,
+                wordBreak: 'break-all',
+                lineHeight: 1.5,
+              },
+            }, "New-NetFirewallRule -DisplayName 'dsh-phone-bridge' -Direction Inbound -Protocol TCP -LocalPort 8787 -Action Allow -Profile Private"),
             h('div', { style: Object.assign({}, muted, { padding: '2px 0 8px' }) }, t.collabHint),
             // 用户要的是「每个会话一个开关」：勾上就自动配对到下面选的那个手机会话，
             // 之后谁不点名发的消息都走这条配对，不用每回再选。
