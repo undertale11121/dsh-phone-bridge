@@ -1038,7 +1038,9 @@ function sessionMeta(id) {
     value = {
       title: String(record?.rows?.title?.val || ''),
       cwd: String(record?.identity?.cwd || ''),
-      at: Number(record?.identity?.createdAt || 0) || 0,
+      // createdAt 是「这个会话哪时候建的」，用它判活跃会把刚说话的会话排到最后；
+      // 文件 mtime 才是「最近一次有人在这里说话」。
+      at: stamp || Number(record?.identity?.createdAt || 0) || 0,
     }
   } catch {
     value = empty
