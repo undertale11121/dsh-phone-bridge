@@ -1,6 +1,6 @@
 {
   "name": "dsh-phone-bridge",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "type": "module",
   "description": "Cross-device bridge between a DSH desktop host and a dsh-go phone: the desktop model can drive the phone (screen, tap, open, shell, files) and both models can hand work to each other.",
   "license": "MIT",
@@ -43,8 +43,7 @@
     "icon.svg",
     "cordis.patch.yml",
     "LICENSE",
-    "README.md",
-    "NOTES.md"
+    "README.md"
   ],
   "scripts": {
     "test": "node test/web.mjs",
