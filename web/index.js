@@ -628,6 +628,9 @@ function writeWakeState(value) {
  * Deliver one user message into a live Session through the engine's own agent
  * service, the same path the Web UI uses.
  */
+const BUSY_TIMEOUT_MS = Number(process.env.PHONE_BRIDGE_BUSY_MS || 120_000)
+const busySince = new Map()
+
 export async function wakeSession(agents, sessionId, text, mode = 'queue', options = {}) {
   const agent = agents?.get?.(sessionId)
   if (!agent) {
@@ -642,9 +645,21 @@ export async function wakeSession(agents, sessionId, text, mode = 'queue', optio
   // 对方正在生成（一回合没跑完）时别 followup：那会排进 inbox，界面上就多出
   // 一条「等待发送」的消息气泡——用户的原话是「有时候会出现等待发送的对方模型
   // 消息」。等它空下来再投，反正消息留在工作台上不丢，3 秒后还会再试。
+  //
+  // 但状态有时会卡住（实测手机会话 status 一直是 running、实际早就没在干活），
+  // 那就会永远投不进去。所以同一会话连续报忙超过 BUSY_TIMEOUT_MS 就强投一次。
   const status = String(agent.status || '')
   if (!options.force && status && status !== 'idle') {
-    throw new Error(`会话 ${String(sessionId).slice(0, 8)}… 正忙（${status}），这条消息等它空下来再投`)
+    const since = busySince.get(sessionId) || Date.now()
+    busySince.set(sessionId, since)
+    const stuckFor = Date.now() - since
+    if (stuckFor < BUSY_TIMEOUT_MS) {
+      throw new Error(`会话 ${String(sessionId).slice(0, 8)}… 正忙（${status}），这条消息等它空下来再投`)
+    }
+    log(`会话 ${String(sessionId).slice(0, 8)}… 报忙已 ${Math.round(stuckFor / 1000)}s，状态多半卡住了，这次强行投递`)
+    busySince.delete(sessionId)
+  } else {
+    busySince.delete(sessionId)
   }
   const message = {
     id: crypto.randomUUID(),
