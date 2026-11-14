@@ -450,6 +450,7 @@ function readWakeState() {
     cursor: Number(state.cursor || 0),
     lastWake: state.lastWake || null,
     lastError: String(state.lastError || ''),
+    pending: state.pending && typeof state.pending === 'object' ? state.pending : null,
   }
 }
 
@@ -483,13 +484,42 @@ export async function wakeSession(agents, sessionId, text, mode = 'queue') {
   return { sessionId, mode: mode === 'steer' ? 'steer' : 'queue', preview: String(text).slice(0, 120), at: new Date().toISOString() }
 }
 
-async function threadSince(config, since) {
+async function threadPath(config, query) {
   const auth = Buffer.from(JSON.stringify({ k: 'token', token: config.token })).toString('base64url')
-  const res = await fetch(`http://127.0.0.1:${config.port}/thread?since=${since}&limit=50&auth=${auth}`, {
+  const res = await fetch(`http://127.0.0.1:${config.port}/thread?${query}&auth=${auth}`, {
     signal: AbortSignal.timeout(2500),
   })
   if (!res.ok) throw new Error(`工作台读不到（HTTP ${res.status}）`)
   return await res.json()
+}
+
+async function threadSince(config, since) {
+  return threadPath(config, `since=${since}&limit=50`)
+}
+
+// 工作台上躺着几十条历史。第一次跑（cursor 还是 0）如果从 0 开始拉，会把它们
+// 一次性全灌进会话——对方看到的就是「历史消息重放」，一屏老话。
+// 所以首次只探路不投递：先问出「现在最后一条是几号」，把 cursor 对齐到那儿。
+async function alignCursor(fetchThread, viewer = 'desktop') {
+  let since = 0
+  let last = 0
+  for (let i = 0; i < 20; i++) {
+    const data = await fetchThread(`since=${since}&as=${viewer}&limit=200`)
+    const rows = data?.messages || []
+    if (!rows.length) break
+    last = Number(rows[rows.length - 1].seq || last)
+    if (rows.length < 200) break
+    since = last
+  }
+  return last
+}
+
+// 一次只说一句：投完一条就停下，等对方回话（或等够久）再投下一条。
+// 不然攒了几条的消息会一口气灌进对方会话，看着就是刷屏。
+const REPLY_WAIT_MS = 120_000
+
+function repliedSince(rows, from, seq) {
+  return (rows || []).some((row) => row && row.from !== from && Number(row.seq || 0) > Number(seq || 0))
 }
 
 async function wakeTick(agents) {
@@ -497,6 +527,19 @@ async function wakeTick(agents) {
   const wake = readWake(config)
   const state = readWakeState()
   if (!wake.enabled || !config.token) return
+
+  // 首次启动：把 cursor 对齐到「现在最后一条」，一条历史都不投。
+  if (!state.cursor) {
+    try {
+      const last = await alignCursor((query) => threadPath(config, query))
+      if (last > 0) {
+        state.cursor = last
+        state.lastError = ''
+        writeWakeState(state)
+      }
+    } catch {}
+    return
+  }
 
   let data
   try {
@@ -508,6 +551,15 @@ async function wakeTick(agents) {
       writeWakeState(state)
     }
     return
+  }
+
+  // 上一条还没等到回话就别急着投下一条。等超过 REPLY_WAIT_MS 就当对方在忙，
+  // 继续投——宁可慢，也不能把消息永远卡在自己这儿。
+  if (state.pending) {
+    const replied = repliedSince(data.messages, 'desktop', state.pending.seq)
+    const stale = Date.now() - Number(state.pending.at || 0) > REPLY_WAIT_MS
+    if (!replied && !stale) return
+    state.pending = null
   }
 
   const incoming = (data.messages || []).filter(
@@ -564,11 +616,14 @@ async function wakeTick(agents) {
     try {
       state.lastWake = await wakeSession(agents, sessionId, text, wake.mode)
       state.lastError = ''
-      state.cursor = Number(data.next || state.cursor)
+      // 只推进到这一条：剩下的一条一条来，等对方回话再投。
+      state.cursor = Number(item.seq || state.cursor)
+      state.pending = { seq: Number(item.seq || 0), at: Date.now() }
     } catch (error) {
       state.lastError = String(error?.message || error)
       break
     }
+    break
   }
   writeWakeState(state)
 }
@@ -739,6 +794,19 @@ async function inboxTick(agents, lastReport) {
   const base = String(config.url).replace(/\/+$/, '')
   const state = readJson(inboxStatePath(), { cursor: 0, lastError: '' })
 
+  // 和桌面侧一个规矩：第一次跑先把 cursor 对齐到最新，不把历史灌进会话。
+  if (!state.cursor) {
+    try {
+      const last = await alignCursor((query) => bridgeGet(base, `/thread?${query}`, config.token, 8000), 'phone')
+      if (last > 0) {
+        state.cursor = last
+        state.lastError = ''
+        writeJson(inboxStatePath(), state)
+      }
+    } catch {}
+    return lastReport
+  }
+
   let data
   try {
     data = await bridgeGet(base, `/thread?since=${Number(state.cursor) || 0}&as=phone&limit=50`, config.token)
@@ -749,6 +817,14 @@ async function inboxTick(agents, lastReport) {
       writeJson(inboxStatePath(), state)
     }
     return lastReport
+  }
+
+  // 一次只说一句：上一条还在等回话就先停手。
+  if (state.pending) {
+    const replied = repliedSince(data?.messages, 'phone', state.pending.seq)
+    const stale = Date.now() - Number(state.pending.at || 0) > REPLY_WAIT_MS
+    if (!replied && !stale) return lastReport
+    state.pending = null
   }
 
   let collab = null
@@ -776,11 +852,14 @@ async function inboxTick(agents, lastReport) {
       try {
         state.lastWake = await wakeSession(agents, target.id, `【来自电脑模型的消息】\n${item.text}`, 'queue')
         state.lastError = ''
-        state.cursor = Number(data?.next || state.cursor)
+        // 同上：只推进到这一条，等下一条要等对方回话。
+        state.cursor = Number(item.seq || state.cursor)
+        state.pending = { seq: Number(item.seq || 0), at: Date.now() }
       } catch (error) {
         state.lastError = String(error?.message || error)
         break
       }
+      break
     }
     writeJson(inboxStatePath(), state)
   }
