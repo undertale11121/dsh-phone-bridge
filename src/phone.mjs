@@ -68,9 +68,39 @@ function safeSize(file) {
 }
 
 
+// 错误文案：把 undici/fetch 的 cause 链展开，否则用户只看到 "fetch failed"。
+export function explainError(error) {
+  if (!error) return '未知错误'
+  if (typeof error === 'string') return error
+  const parts = []
+  const seen = new Set()
+  let current = error
+  for (let depth = 0; current && depth < 4; depth += 1) {
+    if (typeof current === 'string') {
+      parts.push(current)
+      break
+    }
+    if (seen.has(current)) break
+    seen.add(current)
+    const message = String(current.message || '').trim()
+    const code = String(current.code || '').trim()
+    const text = code && !message.includes(code) ? `${message || '错误'}（${code}）` : message
+    if (text) parts.push(text)
+    current = current.cause
+  }
+  if (!parts.length) {
+    try {
+      return JSON.stringify(error)
+    } catch {
+      return String(error)
+    }
+  }
+  return parts.join(' · ')
+}
+
 // dsh-go 把「relay 连接还开着」当成一轮手机操控仍在进行，于是那个「看桌面」
 // 悬浮条一直挂在桌面上。空闲这么久就把连接断掉，让那一轮正常收尾。
-const RELAY_IDLE_MS = Number(process.env.PHONE_BRIDGE_RELAY_IDLE_MS || 15_000)
+const RELAY_IDLE_MS = Number(process.env.PHONE_BRIDGE_RELAY_IDLE_MS || 60_000)
 // 「（手机已连上电脑）」提醒的冷却时间。
 const ANNOUNCE_COOLDOWN_MS = Number(process.env.PHONE_BRIDGE_ANNOUNCE_MS || 30 * 60_000)
 
@@ -147,6 +177,7 @@ export class PhoneBridge {
     this.running = false
     this.relay = null
     this.relayBusy = Promise.resolve()
+    this.relayPending = 0
     this.relayIdle = null
     this.authFailed = false
     this.connected = false
@@ -209,7 +240,7 @@ export class PhoneBridge {
   start() {
     if (this.running) return
     this.running = true
-    this.loop().catch((error) => log(`连接循环退出：${error?.message || error}`))
+    this.loop().catch((error) => log(`连接循环退出：${explainError(error)}`))
     this.peer = ensurePeerLink({
       config: this.config,
       identity: this.identity,
@@ -282,7 +313,7 @@ export class PhoneBridge {
           this.running = false
           return
         }
-        this.lastError = error?.message || String(error)
+        this.lastError = explainError(error)
         log(`连接失败（${this.lastError}），${Math.round(backoff / 1000)}s 后重试`)
         await sleep(backoff)
         backoff = Math.min(backoff * 2, 15_000)
@@ -351,7 +382,7 @@ export class PhoneBridge {
       } catch (error) {
         // 手机流量下网络会抖：一两次超时先就地重试，别每次都重新握手
         misses += 1
-        this.lastError = error?.message || String(error)
+        this.lastError = explainError(error)
         if (misses >= 3) {
           this.connected = false
           throw error
@@ -376,10 +407,10 @@ export class PhoneBridge {
       await this.post('/res', { id: req.id, ok: true, data: data ?? {} })
       log(`执行 ${req.op} 完成（${Math.round((Date.now() - started) / 1000)}s）`)
     } catch (error) {
-      await this.post('/res', { id: req.id, ok: false, error: { message: error?.message || String(error) } }).catch(
+      await this.post('/res', { id: req.id, ok: false, error: { message: explainError(error) } }).catch(
         () => {},
       )
-      log(`执行 ${req.op} 失败：${error?.message || error}`)
+      log(`执行 ${req.op} 失败：${explainError(error)}`)
     }
   }
 
@@ -474,9 +505,11 @@ export class PhoneBridge {
       release = resolve
     })
     await previous
+    this.relayPending += 1
     try {
       return await fn()
     } finally {
+      this.relayPending = Math.max(0, this.relayPending - 1)
       release()
       // 所有用到 relay 的路径（包括启动时的 tools/list）都要把空闲计时器续上，
       // 否则那条连接会一直挂着，dsh-go 的悬浮条就收不掉。
@@ -518,6 +551,11 @@ export class PhoneBridge {
     if (this.relayIdle) clearTimeout(this.relayIdle)
     this.relayIdle = setTimeout(() => {
       this.relayIdle = null
+      // 还有请求在路上就别断：断开会把 dsh-go 那边正在跑的一轮提前结束。
+      if (this.relayPending > 0) {
+        this.scheduleRelayIdle()
+        return
+      }
       const relay = this.relay
       this.relay = null
       try {
@@ -842,7 +880,7 @@ export class PhoneBridge {
       try {
         tools = (await this.listTools()).map((t) => t.name)
       } catch (error) {
-        tools = [`（读工具失败：${error?.message || error}）`]
+        tools = [`（读工具失败：${explainError(error)}）`]
       }
     }
     return {
@@ -1316,7 +1354,7 @@ export function ensureHeadlessPatch(home = dshHome()) {
       log(`已从 ${file} 生成 headless 模型补丁：${target}`)
       return target
     } catch (error) {
-      log(`生成模型补丁失败：${error?.message || error}`)
+      log(`生成模型补丁失败：${explainError(error)}`)
     }
   }
   throw new Error(
@@ -1632,12 +1670,23 @@ function handlerAliases(handlers) {
   }
 }
 
-// 手机端只允许一个桥接实例：pid 文件 + 存活检查，进程没了自动接管。
+// 单实例锁的第二个校验：pid 活着不代表它就是 bridge——系统会把回收的 pid
+// 分给别的进程，只看 alive() 会让新实例永远拒绝启动（用户看到「桥接起不来」）。
+function isBridgeProcess(pid) {
+  if (process.platform !== 'linux') return true
+  try {
+    return fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').includes('bridge.mjs')
+  } catch {
+    return false
+  }
+}
+
+// 手机端只允许一个桥接实例：pid 文件 + 存活检查 + cmdline 校验，进程没了自动接管。
 function takeInstanceLock() {
   try {
     const file = path.join(bridgeDir(), 'bridge.pid')
     const held = Number(readJson(file, {})?.pid || 0)
-    if (held && held !== process.pid && alive(held)) return false
+    if (held && held !== process.pid && alive(held) && isBridgeProcess(held)) return false
     writeJson(file, { pid: process.pid, at: Date.now() })
     return true
   } catch {
@@ -1811,7 +1860,7 @@ export async function runPhoneMcp({ withMcp = true } = {}) {
         relayText = String(result?.text || '')
         if (result?.images?.length) return { text: result.text || '截图已附上', images: result.images }
       } catch (error) {
-        relayError = error?.message || String(error)
+        relayError = explainError(error)
       }
       const shot = await bridge.screenshot(args)
       if (shot) return { text: shot.text, images: shot.images }
@@ -1827,7 +1876,7 @@ export async function runPhoneMcp({ withMcp = true } = {}) {
     },
     async bridge_doctor() {
       const info = bridge.peers()
-      const self = await bridge.selfCheck().catch((error) => ({ error: error?.message || String(error) }))
+      const self = await bridge.selfCheck().catch((error) => ({ error: explainError(error) }))
       const status = bridge.status()
       const lines = [
         `配对：${status.paired ? '是' : '否'} · 在线：${status.connected ? '是' : '否'} · 模式：${info.mode === 'listen' ? '本机被连接' : '本机主动连'}`,
