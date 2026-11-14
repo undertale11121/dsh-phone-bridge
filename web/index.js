@@ -405,7 +405,13 @@ function writeWakeState(value) {
 export async function wakeSession(agents, sessionId, text, mode = 'queue') {
   const agent = agents?.get?.(sessionId)
   if (!agent) {
-    throw new Error(`会话 ${String(sessionId).slice(0, 8)}… 没开在引擎里；先用 DSH 打开它，或用 phone_ask 的 session 参数继续`)
+    // 会话没在这个引擎里打开（切走了、重启过、或者 id 记错了）就别硬投。
+    // 但要让等待的一方知道：**是目标不在线，不是投递出错**。
+    const open = listLiveSessions(agents)
+    const hint = open.length
+      ? `；当前开着 ${open.length} 个会话：${open.map((row) => row.id.slice(0, 8)).join('、')}`
+      : '；当前一个会话都没开'
+    throw new Error(`会话 ${String(sessionId).slice(0, 8)}… 没开在引擎里${hint}。先把它切到前台，或用工牌 ID 重新指定`)
   }
   const message = {
     id: crypto.randomUUID(),
@@ -431,7 +437,11 @@ async function wakeTick(agents) {
   const config = readConfig()
   const wake = readWake(config)
   const state = readWakeState()
-  const target = wake.sessionId || readActive()?.sessionId || ''
+  // 目标一个都不写死：先看卡片里指定的那个还在不在，不在就投给现在开着的会话。
+  const pinned = wake.sessionId || readActive()?.sessionId || ''
+  const live = listLiveSessions(agents)
+  const pinnedLive = pinned && live.some((row) => row.id === pinned)
+  const target = pinnedLive ? pinned : live[0]?.id || ''
   if (!wake.enabled || !config.token) return
   let data
   try {
@@ -461,7 +471,9 @@ async function wakeTick(agents) {
       sessionId = row.id
     }
     if (!sessionId) {
-      state.lastError = '还不知道该唤醒哪个会话：让电脑模型用一次互联工具，或在手机上写 desktop:<会话名>'
+      state.lastError = live.length
+        ? '手里没有可投的会话 id（拿到了会话但读不出 id），先看看卡片里的「本次唤醒目标」'
+        : 'DSH 里现在没有打开的会话：先把要唤醒的对话切到前台，手机发的话会投给它'
       continue
     }
     const text = `【来自${item.from === 'phone' ? '手机模型' : item.from}的消息】\n${item.text}`
@@ -475,10 +487,78 @@ async function wakeTick(agents) {
   writeWakeState(state)
 }
 
+// ── 唤醒目标：谁开着就把消息投给谁 ─────────────────────────────────────────
+// 老办法要求事先知道 sessionId，而 card 上根本填不出来：会话 id 只有 MCP
+// caller 才带得回来，宿主半这边的工具（peer_*）压根拿不到。于是 wake 永远算
+// 不出 target，手机上发的话到不了任何对话。
+//
+// 换个思路：不做「点名」，做「掷给开着的那个」。每次 tick 从 agents 服务里
+// 现查还开着的会话，按最近活跃排序取第一个；有多个且用户又在卡片里明确指定
+// 了某个 id，就仍以那个 id 为准（它在就投它）。
+export function listLiveSessions(agents) {
+  const handle = agents || agentsRef
+  const rows = []
+  const push = (id, item) => {
+    if (!id) return
+    rows.push({
+      id: String(id),
+      at: Number(item?.at || item?.updatedAt || item?.lastActivity || 0) || 0,
+    })
+  }
+  const feed = (value) => {
+    if (!value) return
+    if (typeof value[Symbol.iterator] === 'function' && typeof value !== 'string') {
+      for (const item of value) {
+        // 迭代出来的可能是 [id, info] 也可能是整个 session 对象
+        if (Array.isArray(item)) push(item[0], item[1])
+        else push(item?.id || item?.sessionId, item)
+      }
+      return
+    }
+    if (typeof value === 'object') for (const [id, item] of Object.entries(value)) push(id, item)
+  }
+  try {
+    for (const key of ['list', 'array', 'all', 'values', 'entries', 'sessions']) {
+      if (typeof handle?.[key] !== 'function') continue
+      try {
+        const value = handle[key]()
+        feed(value)
+        if (rows.length) break
+      } catch {}
+    }
+  } catch {}
+  return rows.sort((a, b) => b.at - a.at)
+}
+
+function bindLiveTarget(agents) {
+  const probe = () => {
+    const rows = listLiveSessions(agents)
+    if (rows.length === 1) {
+      const only = rows[0].id
+      const config = readConfig()
+      const wake = readWake(config)
+      if (!wake.sessionId) {
+        wake.sessionId = only
+        config.wake = wake
+        try {
+          writeJson(configPath(), config)
+        } catch {}
+      }
+      return only
+    }
+    return ''
+  }
+  try {
+    if (typeof agents?.on === 'function') agents.on('internal/session', probe)
+  } catch {}
+  return probe
+}
+
 function installWake(ctx) {
   if (typeof ctx.inject !== 'function') return
   ctx.inject(['agents'], (scope) => {
     agentsRef = scope.agents
+    bindLiveTarget(scope.agents)
     const start = () => {
       let busy = false
       const timer = setInterval(() => {
