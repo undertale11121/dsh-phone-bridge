@@ -220,7 +220,18 @@ class DesktopBridge {
   }
 
   get online() {
-    return this.device !== null && Date.now() - this.lastPoll < 70_000
+    const at = Math.max(this.lastPoll || 0, this.lastSeen || 0)
+    return this.device !== null && Date.now() - at < 70_000
+  }
+
+  // 手机即使暂时没在轮询（切后台、换网络），只要还主动调 /call，
+  // 就说明它在线，别让模型看到「online:false」误判。
+  markSeen(id) {
+    this.lastSeen = Date.now()
+    if (!this.device && id) {
+      const rec = (this.config.devices || []).find((item) => item.id === id)
+      if (rec) this.device = { ...rec }
+    }
   }
 
   // How long the "allow a new phone" window still runs (ms).
@@ -454,6 +465,7 @@ class DesktopBridge {
     if (req.method === 'POST' && route === '/call') {
       const body = await readBody(req)
       if (!this.checkAuth(body)) return sendJson(res, 401, { ok: false })
+      this.markSeen(body?.auth?.id)
       try {
         const result = await this.handleCall(String(body?.op || ''), body?.args || {})
         return sendJson(res, 200, { ok: true, ...result })
@@ -1874,17 +1886,43 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
   })
 }
 
+// Windows has no bash by default: pick a shell that exists. A missing binary
+// used to kill the whole bridge process (spawn's 'error' event was unhandled),
+// which showed up on the phone as ECONNRESET.
+function localShellSpec(command) {
+  if (process.platform === 'win32') {
+    const comspec = process.env.ComSpec || 'cmd.exe'
+    return { file: comspec, args: ['/d', '/s', '/c', command] }
+  }
+  return { file: process.env.SHELL && fs.existsSync(process.env.SHELL) ? process.env.SHELL : 'bash', args: ['-lc', command] }
+}
+
 function runLocalShell(args) {
   return new Promise((resolve) => {
-    const child = spawn('bash', ['-lc', args.command], {
-      cwd: args.cwd && fs.existsSync(args.cwd) ? args.cwd : undefined,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
+    const spec = localShellSpec(String(args.command || ''))
+    let child
+    try {
+      child = spawn(spec.file, spec.args, {
+        cwd: args.cwd && fs.existsSync(args.cwd) ? args.cwd : undefined,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      })
+    } catch (error) {
+      resolve(formatShell({ stdout: '', stderr: `启动 shell 失败：${error.message}`, code: -1 }))
+      return
+    }
     let stdout = ''
     let stderr = ''
-    child.stdout.on('data', (c) => (stdout += c))
-    child.stderr.on('data', (c) => (stderr += c))
-    child.on('close', (code) => resolve(formatShell({ stdout: truncate(stdout, 400_000), stderr: truncate(stderr, 100_000), code })))
+    let settled = false
+    const finish = (payload) => {
+      if (settled) return
+      settled = true
+      resolve(formatShell({ stdout: truncate(stdout, 400_000), stderr: truncate(stderr, 100_000), ...payload }))
+    }
+    child.stdout?.on('data', (c) => (stdout += c))
+    child.stderr?.on('data', (c) => (stderr += c))
+    child.on('error', (error) => finish({ code: -1, stderr: `${stderr}启动 shell 失败：${error.message}` }))
+    child.on('close', (code) => finish({ code }))
   })
 }
 
