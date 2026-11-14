@@ -984,9 +984,11 @@ class DesktopBridge {
     let failed = null
     child.on('error', (error) => (failed = error))
     child.unref()
-    // 立刻看一眼：能起来的话 600ms 内不会退出
+    // 立刻看一眼：能起来的话 600ms 内不会退出。
+    // 注意 exitCode === 0 是「跑得太快、已经正常结束了」，不是启动失败——
+    // 手机模型指出的边界：把快速成功的运行误报成启动失败会让人白查半天。
     await new Promise((resolve) => setTimeout(resolve, 600))
-    if (failed || child.exitCode !== null) {
+    if (failed || (child.exitCode !== null && child.exitCode !== 0)) {
       const tail = readLogTail(logFile, 20)
       removeAgent(id)
       throw new Error(`子智能体没能启动（${failed?.message || `退出码 ${child.exitCode}`}）${tail ? `\n${tail}` : ''}`)
