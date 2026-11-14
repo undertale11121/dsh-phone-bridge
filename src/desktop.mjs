@@ -86,6 +86,20 @@ function applyEnv(config) {
   return config
 }
 
+// 会话开关单独一个文件：desktop.json 两边进程都读写，混在一起会互相覆盖。
+const linksPath = () => path.join(bridgeDir(), 'links.json')
+
+export function readLinksFile() {
+  const raw = readJson(linksPath(), null)
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw
+  const legacy = readJson(desktopConfigPath(), {})?.links
+  return legacy && typeof legacy === 'object' && !Array.isArray(legacy) ? legacy : {}
+}
+
+export function writeLinksFile(links) {
+  writeJson(linksPath(), links && typeof links === 'object' ? links : {})
+}
+
 // 手机模型习惯传短 id（0e47a423）；开关必须挂在完整的 session-<uuid> 上，
 // 否则守卫能过、投递却找不到会话。名字/标题也一并认。
 export function resolveDesktopSessionId(raw) {
@@ -554,7 +568,7 @@ class DesktopBridge {
           collab: stored?.collab || null,
           desktopSessions: Array.isArray(live?.sessions) ? live.sessions : [],
           // 手机端会话界面也要显示「互联」，所以把开关表一并带回去。
-          links: stored?.links && typeof stored.links === 'object' ? stored.links : {},
+          links: readLinksFile(),
         })
       }
       // 手机端点那颗开关时写回来，真源始终在电脑上。
@@ -568,7 +582,7 @@ class DesktopBridge {
         const phoneId = String(body?.phoneId || '').trim()
         if (!desktopId && !phoneId) return sendJson(res, 400, { ok: false, text: '要指定是哪一边的会话' })
         const store = readJson(desktopConfigPath(), {})
-        const links = store?.links && typeof store.links === 'object' ? store.links : {}
+        const links = readLinksFile()
         let key = desktopId || Object.keys(links).find((id) => String(links[id]?.phoneId || '') === phoneId) || ''
         if (!key && phoneId) {
           // 手机端点了开关但还没配对过：接到电脑上最近开着的那个会话。
@@ -584,8 +598,7 @@ class DesktopBridge {
         }
         if (body?.off) delete links[key]
         else links[key] = { phoneId: phoneId || String(links[key]?.phoneId || ''), at: new Date().toISOString() }
-        store.links = links
-        writeJson(desktopConfigPath(), store)
+        writeLinksFile(links)
         return sendJson(res, 200, { ok: true, links })
       }
       return sendJson(res, 405, { ok: false })
@@ -863,8 +876,7 @@ class DesktopBridge {
     // 手机端是 Flutter 原生界面，会话头部的 web 插槽在那边渲染不出来，
     // 所以手机面板上的开关走这条 MCP 通道，真源仍写在电脑的 desktop.json.links。
     if (op === 'link') {
-      const store = readJson(desktopConfigPath(), {})
-      const links = store?.links && typeof store.links === 'object' ? store.links : {}
+      const links = readLinksFile()
       // 手机模型习惯传短 id（0e47a423），这里必须补成完整的 session-<uuid>，
       // 否则开关挂在错的 key 上——守卫能过，但投递时找不到会话。
       const desktopId = resolveDesktopSessionId(args?.desktopId)
@@ -872,13 +884,11 @@ class DesktopBridge {
       if (!desktopId) throw new Error('要指定电脑上哪个会话（desktopId）')
       if (args?.off) delete links[desktopId]
       else links[desktopId] = { phoneId, at: new Date().toISOString() }
-      store.links = links
-      writeJson(desktopConfigPath(), store)
+      writeLinksFile(links)
       return { text: args?.off ? '已断开这个会话的互联' : `已把这个会话和手机连起来（${desktopId.slice(0, 16)}…）`, links }
     }
     if (op === 'links') {
-      const store = readJson(desktopConfigPath(), {})
-      const links = store?.links && typeof store.links === 'object' ? store.links : {}
+      const links = readLinksFile()
       return { text: Object.keys(links).length ? JSON.stringify(links) : '现在没有任何会话开着互联', links }
     }
     if (op === 'agent.spawn') {
@@ -2060,7 +2070,7 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
       // 用户要求：会话没开互联，互联类工具就当不存在（告诉智能体去打开关）。
       // 只挡跨端工具；配置/诊断类（bridge_*、phone_bridge_*）照常可用，否则出问题时连诊断都做不了。
       if (/^(peer_|phone_|agent_|session_)/.test(name) && process.env.PHONE_BRIDGE_NO_GATE !== '1') {
-        const links = readJson(desktopConfigPath(), {})?.links
+        const links = readLinksFile()
         if (!links || Object.keys(links).length === 0) {
           throw new Error(
             '这个会话没开互联，互联工具现在不可用。先在这个会话顶部点「🔗 互联」（或让对端用 peer_link 开一个），开了之后这些工具立刻能用。',

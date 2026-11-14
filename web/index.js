@@ -24,6 +24,9 @@ export function bridgeDir() {
 }
 
 const configPath = () => path.join(bridgeDir(), 'desktop.json')
+// 会话开关单独放一个文件：desktop.json 由宿主半和桥接进程两边读写，
+// 混在一起会互相覆盖（手机实测「开着开着 links 就没了」）。
+const linksPath = () => path.join(bridgeDir(), 'links.json')
 const lockPath = () => path.join(bridgeDir(), 'desktop.lock')
 const logPath = () => path.join(bridgeDir(), 'bridge.log')
 
@@ -391,19 +394,17 @@ async function runAction(body) {
       }
     }
     if (!desktopId) throw new Error('要指定是哪个电脑会话')
-    const links = readLinks(config)
+    const links = readLinks()
     if (body.off) {
       delete links[desktopId]
-      config.links = links
-      writeJson(configPath(), config)
+      writeLinks(links)
       return { text: '已断开这个会话的互联' }
     }
     // 用户 m04337「不用手动选」：没指定手机会话就接最近上报的那个。
     const phoneId = String(body.phoneId || '').trim() || defaultPhoneSession()
     if (!phoneId) throw new Error('手机上还没上报任何会话：先让手机连上电脑，手机端也要跑 0.6.4 以上的插件')
     links[desktopId] = { phoneId, at: new Date().toISOString() }
-    config.links = links
-    writeJson(configPath(), config)
+    writeLinks(links)
     const short = (id) => String(id).replace(/^session-/, '').slice(0, 8)
     return { text: `已把这个会话连到手机 ${short(phoneId)}` }
   }
@@ -453,9 +454,18 @@ export function defaultPhoneSession() {
   return String(rows[rows.length - 1].id).slice('psess:'.length)
 }
 
-function readLinks(config) {
-  const raw = (config || readConfig()).links
-  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+export function readLinks(config) {
+  const raw = readJson(linksPath(), null)
+  if (raw && typeof raw === 'object' && !Array.isArray(raw) && Object.keys(raw).length) return raw
+  // 兼容两种老来源：调用方传进来的 config.links（测试用）、以及迁移前存在
+  // desktop.json 里的 links 字段。
+  const passed = config && typeof config.links === 'object' && !Array.isArray(config.links) ? config.links : null
+  const legacy = passed || (readJson(configPath(), {}) || {}).links
+  return legacy && typeof legacy === 'object' && !Array.isArray(legacy) ? legacy : {}
+}
+
+export function writeLinks(links) {
+  writeJson(linksPath(), links && typeof links === 'object' ? links : {})
 }
 
 /** 最近打开的那条配对。没有就返回 null。 */
@@ -801,9 +811,9 @@ async function fulfilPendingSession() {
     console.error(`[phone-bridge] 自动新开会话失败：${error?.message || error}`)
     return null
   }
-  const links = readLinks(config)
+  const links = readLinks()
   links[id] = { phoneId: String(pending.phoneId), at: new Date().toISOString() }
-  config.links = links
+  writeLinks(links)
   delete config.pendingNewSession
   writeJson(configPath(), config)
   return id
