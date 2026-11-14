@@ -434,9 +434,11 @@ class DesktopBridge {
         online: this.online,
         device: this.device,
         port: this.port,
-        pairing: this.pairing(),
-        pairUrl: this.pairUrl(),
-        workbenchUrl: this.workbenchUrl(),
+        // pairing / pairUrl / workbenchUrl 里都内嵌 token，而 /health 免鉴权；
+        // 只对本机回环给，局域网里 curl 到也拿不到。
+        ...(loopbackPeer(req)
+          ? { pairing: this.pairing(), pairUrl: this.pairUrl(), workbenchUrl: this.workbenchUrl() }
+          : {}),
         permitLeft: this.permitLeft,
         codeLeft: this.codeLeft,
         pendingPair: this.pendingPair ? { name: this.pendingPair.name, platform: this.pendingPair.platform, left: this.pendingPairLeft } : null,
@@ -512,7 +514,7 @@ class DesktopBridge {
     if (req.method === 'GET' && route === '/poll') {
       const auth = this.parseAuth(req, url)
       const ok =
-        auth.k === 'token' ? tokenEqual(auth.token, this.config.token) : this.verifyDevice(`${auth.id}:${auth.ts}`, auth.sig, auth.id)
+        auth.k === 'token' ? tokenEqual(auth.token, this.config.token) : authFresh(auth) && this.verifyDevice(`${auth.id}:${auth.ts}`, auth.sig, auth.id)
       if (!ok) return sendJson(res, 401, { ok: false })
       const wait = Math.min(Number(url.searchParams.get('wait') || 25000) || 25000, 60000)
       const wasOnline = this.online
@@ -565,7 +567,7 @@ class DesktopBridge {
       if (req.method === 'GET') {
         const auth = this.parseAuth(req, url)
         const ok =
-          auth.k === 'token' ? tokenEqual(auth.token, this.config.token) : this.verifyDevice(`${auth.id}:${auth.ts}`, auth.sig, auth.id)
+          auth.k === 'token' ? tokenEqual(auth.token, this.config.token) : authFresh(auth) && this.verifyDevice(`${auth.id}:${auth.ts}`, auth.sig, auth.id)
         if (!ok) return sendJson(res, 401, { ok: false })
         return sendJson(res, 200, { ok: true, sessions: listSessions() })
       }
@@ -585,7 +587,7 @@ class DesktopBridge {
       if (req.method === 'GET') {
         const auth = this.parseAuth(req, url)
         const ok =
-          auth.k === 'token' ? tokenEqual(auth.token, this.config.token) : this.verifyDevice(`${auth.id}:${auth.ts}`, auth.sig, auth.id)
+          auth.k === 'token' ? tokenEqual(auth.token, this.config.token) : authFresh(auth) && this.verifyDevice(`${auth.id}:${auth.ts}`, auth.sig, auth.id)
         if (!ok) return sendJson(res, 401, { ok: false })
         const stored = readJson(desktopConfigPath(), {})
         // 顺便把「电脑上开着哪些会话」带回去，否则手机模型无从点名：
@@ -603,9 +605,9 @@ class DesktopBridge {
       if (req.method === 'POST') {
         const auth = this.parseAuth(req, url)
         const ok =
-          auth.k === 'token' ? tokenEqual(auth.token, this.config.token) : this.verifyDevice(`${auth.id}:${auth.ts}`, auth.sig, auth.id)
+          auth.k === 'token' ? tokenEqual(auth.token, this.config.token) : authFresh(auth) && this.verifyDevice(`${auth.id}:${auth.ts}`, auth.sig, auth.id)
         if (!ok) return sendJson(res, 401, { ok: false })
-        const body = readBody(req)
+        const body = await readBody(req).catch(() => ({}))
         const desktopId = String(body?.desktopId || '').trim()
         const phoneId = String(body?.phoneId || '').trim()
         if (!desktopId && !phoneId) return sendJson(res, 400, { ok: false, text: '要指定是哪一边的会话' })
@@ -634,7 +636,7 @@ class DesktopBridge {
       if (req.method === 'GET') {
         const auth = this.parseAuth(req, url)
         const ok =
-          auth.k === 'token' ? tokenEqual(auth.token, this.config.token) : this.verifyDevice(`${auth.id}:${auth.ts}`, auth.sig, auth.id)
+          auth.k === 'token' ? tokenEqual(auth.token, this.config.token) : authFresh(auth) && this.verifyDevice(`${auth.id}:${auth.ts}`, auth.sig, auth.id)
         if (!ok) return sendJson(res, 401, { ok: false })
         const since = Number(url.searchParams.get('since') || 0)
         const as = String(url.searchParams.get('as') || '')
@@ -669,7 +671,7 @@ class DesktopBridge {
       if (req.method === 'GET' && route === '/agents') {
         const auth = this.parseAuth(req, url)
         const ok =
-          auth.k === 'token' ? tokenEqual(auth.token, this.config.token) : this.verifyDevice(`${auth.id}:${auth.ts}`, auth.sig, auth.id)
+          auth.k === 'token' ? tokenEqual(auth.token, this.config.token) : authFresh(auth) && this.verifyDevice(`${auth.id}:${auth.ts}`, auth.sig, auth.id)
         if (!ok) return sendJson(res, 401, { ok: false })
         return sendJson(res, 200, { ok: true, agents: listAgents('desktop') })
       }
@@ -891,7 +893,15 @@ class DesktopBridge {
     else entry.reject(new Error(body?.error?.message || '手机执行失败'))
   }
 
+  // 把已经超时/放弃的请求从待办队列里摘掉：手机重连后 takeQueued 会按顺序
+  // 把这些过期请求派下去执行，副作用（写文件、跑 shell）会重放一遍。
+  dropQueued(id) {
+    const at = this.queue.findIndex((entry) => entry.id === id)
+    if (at >= 0) this.queue.splice(at, 1)
+  }
+
   failPending(reason) {
+    this.queue.length = 0
     for (const [id, entry] of this.pending) {
       this.pending.delete(id)
       clearTimeout(entry.timer)
@@ -1079,6 +1089,7 @@ class DesktopBridge {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id)
+        this.dropQueued(id)
         reject(new Error(`等待手机执行 ${op} 超时（${Math.round(timeout / 1000)}s）`))
       }, timeout)
       this.pending.set(id, { resolve, reject, timer, onProgress })
@@ -1156,6 +1167,18 @@ function sendJson(res, code, value) {
   const text = JSON.stringify(value)
   res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(text) })
   res.end(text)
+}
+
+// 设备签名里带了 ts，但只验签名不验新鲜度的话，截获一次请求就能无限重放。
+function authFresh(auth, windowMs = 5 * 60_000) {
+  const ts = Number(auth?.ts)
+  return Number.isFinite(ts) && Math.abs(Date.now() - ts) <= windowMs
+}
+
+// /health 免鉴权，但配对串里带着 token；只认本机回环（含 IPv4-mapped）。
+function loopbackPeer(req) {
+  const address = String(req?.socket?.remoteAddress || '')
+  return /^(?:::1|::ffff:127\.|127\.)/.test(address)
 }
 
 function readBody(req, limit = MAX_BODY) {

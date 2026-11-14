@@ -389,7 +389,7 @@ async function runAction(body) {
     const out = await bridgePost(remoteBase, '/collab', conf.token, payload)
     if (!out || out.ok === false) throw new Error(String((out && out.text) || '电脑那边没同意'))
     try {
-      writeJson(phoneConfigPath(), { ...conf, peerLinks: out.links || {} })
+      writeJson(path.join(bridgeDir(), 'peer-links.json'), out.links || {})
     } catch {}
     return { text: body.off ? '已断开这个会话的互联' : '已连上电脑上的会话' }
   }
@@ -945,8 +945,14 @@ async function wakeTick(agents) {
       skipped.push(Number(item.seq) || 0)
       return false
     }
-    if (isNotice(item.text)) return false
-    return item.to === 'desktop' || String(item.to || '').startsWith('desktop:')
+    if (isNotice(item.text)) {
+      // 系统通知不投递，但也得跨过去：留着会堵住 50 条的窗口。
+      skipped.push(Number(item.seq) || 0)
+      return false
+    }
+    const forDesktop = item.to === 'desktop' || String(item.to || '').startsWith('desktop:')
+    if (!forDesktop) skipped.push(Number(item.seq) || 0)
+    return forDesktop
   })
   if (!incoming.length) {
     if (skipped.length) state.cursor = Math.max(...skipped, Number(state.cursor) || 0)
@@ -1004,6 +1010,7 @@ async function wakeTick(agents) {
   }
 
   const sentSeqs = []
+  const failedSeqs = []
   for (const [sessionId, items] of groups) {
     const who = items[0].from === 'phone' ? '手机模型' : String(items[0].from || '对方')
     try {
@@ -1012,11 +1019,14 @@ async function wakeTick(agents) {
       for (const item of items) sentSeqs.push(Number(item.seq) || 0)
     } catch (error) {
       state.lastError = String(error?.message || error)
+      for (const item of items) failedSeqs.push(Number(item.seq) || 0)
       break
     }
   }
-  // cursor 只推到最后一条**确实投出去**的消息，没投的留着下次再来。
-  if (sentSeqs.length) state.cursor = Math.max(...sentSeqs, Number(state.cursor) || 0)
+  // cursor 只推到「失败消息之前」的最大已投 seq，没投的留着下次再来。
+  const boundary = failedSeqs.length ? Math.min(...failedSeqs) : Infinity
+  const safeSeqs = sentSeqs.filter((seq) => seq < boundary)
+  if (safeSeqs.length) state.cursor = Math.max(...safeSeqs, Number(state.cursor) || 0)
   writeWakeState(state)
 }
 
@@ -1204,7 +1214,16 @@ function installWake(ctx) {
         if (busy) return
         busy = true
         wakeTick(scope.agents)
-          .catch(() => {})
+          .catch((error) => {
+            // 以前这里是个空 catch：轮询一旦抛错，面板上什么都看不到。
+            const message = String(error?.message || error)
+            console.error(`[phone-bridge] wake poller: ${message}`)
+            try {
+              const current = readWakeState()
+              current.lastError = `唤醒轮询出错：${message}`
+              writeWakeState(current)
+            } catch {}
+          })
           .finally(() => {
             busy = false
           })
@@ -1346,7 +1365,7 @@ async function inboxTick(agents, lastReport) {
   if (peerLinks) {
     try {
       if (JSON.stringify(config.peerLinks || {}) !== JSON.stringify(peerLinks)) {
-        writeJson(phoneConfigPath(), { ...config, peerLinks })
+        writeJson(path.join(bridgeDir(), 'peer-links.json'), peerLinks)
       }
     } catch {}
   }
@@ -1370,7 +1389,11 @@ async function inboxTick(agents, lastReport) {
     if (isNotice(item.text)) return false
     const to = String(item.to || '')
     // 收「给手机」的，也收「点名某个手机会话」的：phone:<id | 名字 | 标题>
-    return to === 'phone' || to.startsWith('phone:')
+    const forPhone = to === 'phone' || to.startsWith('phone:')
+    // 不是给手机的（比如 to='all' 的广播、发给电脑的消息）也要记进 skipped，
+    // 否则一窗 50 条全是这类消息时，每轮读到同一批、cursor 永远不动，后面全堵死。
+    if (!forPhone) skipped.push(Number(item.seq) || 0)
+    return forPhone
   })
 
   if (!incoming.length && skipped.length) {
@@ -1402,6 +1425,7 @@ async function inboxTick(agents, lastReport) {
     const sent = []
     const misses = []
     const fails = []
+    const failedSeqs = []
     for (const [key, rows] of groups) {
       const src = key.startsWith('d:') ? key.slice(2) : ''
       const want = key.startsWith('phone:') ? key.slice('phone:'.length) : ''
@@ -1411,6 +1435,7 @@ async function inboxTick(agents, lastReport) {
           target = await ensureDesktopSession(agents, live, src)
         } catch (error) {
           fails.push(`给电脑会话 ${src.replace(/^session-/, '').slice(0, 8)} 开分身失败：${error?.message || error}`)
+          for (const item of rows) failedSeqs.push(Number(item.seq) || 0)
           continue
         }
       } else {
@@ -1429,12 +1454,16 @@ async function inboxTick(agents, lastReport) {
         if (src) writeJson(lastSourcePath(), { desktopId: src, phoneId: target.id, at: Date.now() })
       } catch (error) {
         fails.push(String(error?.message || error))
+        for (const item of rows) failedSeqs.push(Number(item.seq) || 0)
       }
     }
     if (fails.length) state.lastError = fails[0]
     else if (misses.length) state.lastError = `找不到这些手机会话：${misses.join('、')}`
     else state.lastError = ''
-    if (sent.length) state.cursor = Math.max(...sent, Number(state.cursor) || 0)
+    // 只推进到「失败消息之前」的最大已投 seq：跨过失败的那条就再也拉不回来了。
+    const boundary = failedSeqs.length ? Math.min(...failedSeqs) : Infinity
+    const safe = sent.filter((seq) => seq < boundary)
+    if (safe.length) state.cursor = Math.max(...safe, Number(state.cursor) || 0)
     writeJson(inboxStatePath(), state)
   }
 
