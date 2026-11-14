@@ -145,11 +145,12 @@ function textOf(tree) {
   if (!inputs.length) throw new Error('没有输入框')
   if (!buttons.some((b) => (b.props?.children || []).includes('发给手机'))) throw new Error('没有「发给手机」按钮')
 
-  const desktopOptions = selects[0].props.children
-  const phoneOptions = selects[1].props.children
-  if (desktopOptions.length < 2) throw new Error('电脑会话下拉没有选项')
-  if (phoneOptions.length < 2) throw new Error('手机会话下拉没有选项')
-  console.log(`✓ 电脑会话选项 ${desktopOptions.length} 个，手机会话选项 ${phoneOptions.length} 个`)
+  // 电脑会话不再用下拉，改成「每个会话一行开关」；手机会话仍是一个下拉（配对到谁）。
+  const phoneOptions = selects[0].props.children
+  if (phoneOptions.length < 1) throw new Error('手机会话下拉没有选项')
+  const toggles = inputs.filter((node) => node.props?.type === 'checkbox')
+  if (!toggles.length) throw new Error('没有会话互联开关')
+  console.log(`✓ 手机会话选项 ${phoneOptions.length} 个，会话开关 ${toggles.length} 个`)
   console.log('✓ 有 state 时面板渲染通过')
 }
 

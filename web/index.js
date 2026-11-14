@@ -277,6 +277,8 @@ async function snapshot() {
     allSessions: listAllSessions(),
     // 协作对：电脑会话 × 手机会话，面板上两排下拉读写它。
     collab: readCollab(config),
+    // 每个会话的互联开关（面板上逐行勾选）。
+    links: readLinks(config),
     agents: readAgents(),
     log: readLogTail(8),
     configPath: configPath(),
@@ -359,6 +361,22 @@ async function runAction(body) {
     const row = await bridgePost(`http://127.0.0.1:${info.port}`, '/thread', config.token, { from: 'desktop', to: target, text, level: body.level })
     return { text: `已发到 ${target}（#${row.seq ?? '?'}）` }
   }
+  if (body.action === 'link') {
+    // 面板上某个会话的「互联」开关：打开 = 配一个对端会话，关闭 = 删掉。
+    const desktopId = String(body.desktopId || '').trim()
+    if (!desktopId) throw new Error('要指定是哪个电脑会话')
+    const links = readLinks(config)
+    if (body.off) {
+      delete links[desktopId]
+      config.links = links
+      writeJson(configPath(), config)
+      return { text: '已断开这个会话的互联' }
+    }
+    links[desktopId] = { phoneId: String(body.phoneId || '').trim(), at: new Date().toISOString() }
+    config.links = links
+    writeJson(configPath(), config)
+    return { text: '已打开这个会话的互联' }
+  }
   if (body.action === 'collab') {
     const collab = readCollab(config)
     if (typeof body.desktopSessionId === 'string') collab.desktopSessionId = body.desktopSessionId.trim()
@@ -393,6 +411,22 @@ const COLLAB_DEFAULTS = { desktopSessionId: '', phoneSessionId: '', phoneName: '
 
 function readCollab(config) {
   return { ...COLLAB_DEFAULTS, ...((config || readConfig()).collab || {}) }
+}
+
+// 互联开关：一个电脑会话对一个手机会话，{ [电脑会话 id]: { phoneId, at } }。
+// 用户的原话是「在每个会话里面做一个互联开关，打开后……不用用户自己选」——
+// 开关打开后，谁不点名发的消息都默认走这条配对。
+function readLinks(config) {
+  const raw = (config || readConfig()).links
+  return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}
+}
+
+/** 最近打开的那条配对。没有就返回 null。 */
+export function recentLink(config) {
+  const entries = Object.entries(readLinks(config)).filter(([id, row]) => id && row && row.phoneId)
+  if (!entries.length) return null
+  entries.sort((a, b) => String(b[1].at || '').localeCompare(String(a[1].at || '')))
+  return { desktopId: entries[0][0], phoneId: entries[0][1].phoneId }
 }
 
 let agentsRef = null
@@ -791,8 +825,9 @@ async function wakeTick(agents) {
   //   ① 卡片指定且还活着的会话  ② 最近有活动的活会话  ③ 一个都没有就等
   const live = listLiveSessions(agents)
   const collab = readCollab(config)
-  // 面板上钉的协作对优先级最高；没钉才退回到卡片里的 sessionId / 最近用过的那个。
-  const pinned = collab.desktopSessionId || wake.sessionId || readActive()?.sessionId || ''
+  // 优先级：会话开关（links）> 面板钉的协作对 > 卡片里的 sessionId > 最近用过的那个。
+  const link = recentLink(config)
+  const pinned = link?.desktopId || collab.desktopSessionId || wake.sessionId || readActive()?.sessionId || ''
   const pickByPinned = pinned ? live.find((row) => row.id === pinned) : null
 
   // 同一个会话的消息合成一条投。用户的原话是「每次你俩发消息，出现一大串，
@@ -1129,7 +1164,8 @@ async function inboxTick(agents, lastReport) {
       syncPeerSessions(peerSessions)
     } catch {}
   }
-  const pinned = String(collab?.phoneSessionId || '')
+  const link = recentLink(config)
+  const pinned = String(link?.phoneId || collab?.phoneSessionId || '')
 
   const incoming = (data?.messages || []).filter((item) => {
     if (!item || item.from === 'phone') return false

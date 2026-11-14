@@ -23,3 +23,13 @@ node_modules/
 Thumbs.db
 # 本地生成：headless 会话的模型配置（从 profile 抽出来，含模型列表）
 headless.patch.yml
+
+# 运行时数据：不是源码，每次跑都会变
+agents.json
+live.json
+thread.jsonl
+thread-archive-*.jsonl
+registry.json
+inbox-state.json
+active.json
+.announce.json

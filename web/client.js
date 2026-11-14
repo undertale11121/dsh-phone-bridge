@@ -188,6 +188,11 @@ function __buildPhoneBridge(require) {
         var sayLevelPair = useState('normal')
         var sayLevel = sayLevelPair[0]
         var setSayLevel = sayLevelPair[1]
+        // 用户说「会话还是太长，只保留紧要消息」：默认只显示带暗号的，
+        // 普通消息折叠起来，要看得点一下「全部」。
+        var showAllPair = useState(false)
+        var showAll = showAllPair[0]
+        var setShowAll = showAllPair[1]
 
         var load = useCallback(function () {
           fetch('/phone-bridge/config', { headers: { accept: 'application/json' } })
@@ -522,6 +527,12 @@ function __buildPhoneBridge(require) {
           var phoneRows = (state.agents || []).filter(function (item) {
             return item && item.host === 'phone' && String(item.id || '').indexOf('psess:') === 0
           })
+          var links = state.links || {}
+          var linkTarget = String(
+            collab.phoneSessionId
+            || (phoneRows[0] ? String(phoneRows[0].id).replace(/^psess:/, '') : '')
+            || ''
+          )
           var pickCollab = function (patch) {
             var next = {
               action: 'collab',
@@ -542,44 +553,49 @@ function __buildPhoneBridge(require) {
           }
           children.push(h('div', { key: 'collab', style: card },
             h('div', { style: cardTitle }, t.collab),
+            // 手机没连上时先说明白下一步，别只让下拉空着。
+            paired ? null : h('div', { style: Object.assign({}, muted, { padding: '2px 0 6px' }) },
+              '手机现在没连上。把上面的配对串发到手机对话里执行 bridge_pair，或者等它自动重连。'),
             h('div', { style: Object.assign({}, muted, { padding: '2px 0 8px' }) }, t.collabHint),
-            h('div', { style: { display: 'flex', gap: 12, flexWrap: 'wrap' } },
-              h('label', { style: { display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, flex: '1 1 220px', minWidth: 0 } },
-                h('span', { style: muted }, t.collabDesktop),
-                h('select', {
-                  value: collab.desktopSessionId || '',
-                  style: field,
-                  onChange: function (event) { pickCollab({ desktopSessionId: event.target.value }) },
-                },
-                  h('option', { value: '' }, t.collabNone),
-                  live.map(function (item) {
-                    // 显示左侧栏里那个会话名字（title），没有才退到手动名字 / 目录名
-                    var folder = String(item.cwd || '').split(/[\\/]/).filter(Boolean).pop() || ''
-                    var label = item.title || item.name || folder || '会话'
-                    if (item.title && item.name && item.name !== item.title) label += ' · ' + item.name
-                    // 没开着的会话收不到消息：选它是可以的，但要让人知道它现在收不到
-                    if (item.open === false) label += t.sessionClosed
-                    return h('option', { key: item.id, value: item.id, title: item.cwd || item.id }, label)
-                  }),
-                ),
-                live.length ? null : h('div', { style: muted }, t.liveNone),
+            // 用户要的是「每个会话一个开关」：勾上就自动配对到下面选的那个手机会话，
+            // 之后谁不点名发的消息都走这条配对，不用每回再选。
+            h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8, fontSize: 13 } },
+              h('span', { style: muted }, '配对到'),
+              h('select', {
+                value: linkTarget,
+                style: Object.assign({}, field, { width: 'auto', minWidth: 150 }),
+                onChange: function (event) { pickCollab({ phoneSessionId: event.target.value }) },
+              },
+                phoneRows.map(function (item) {
+                  var label = item.name || item.title || '手机会话'
+                  return h('option', { key: item.id, value: String(item.id).replace(/^psess:/, '') }, label)
+                }),
+                phoneRows.length ? null : h('option', { value: '' }, t.phoneNone),
               ),
-              h('label', { style: { display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, flex: '1 1 220px', minWidth: 0 } },
-                h('span', { style: muted }, t.collabPhone),
-                h('select', {
-                  value: collab.phoneSessionId || '',
-                  style: field,
-                  onChange: function (event) { pickCollab({ phoneSessionId: event.target.value }) },
-                },
-                  h('option', { value: '' }, t.collabNone),
-                  phoneRows.map(function (item) {
-                    var label = item.name || (item.title || '手机会话')
-                    return h('option', { key: item.id, value: String(item.id).replace(/^psess:/, ''), title: item.cwd || String(item.id).replace(/^psess:/, '') }, label)
-                  }),
-                ),
-                phoneRows.length ? null : h('div', { style: muted }, t.phoneNone),
-              ),
+              phoneRows.length ? null : h('span', { style: muted }, '（手机会话还没报上来）'),
             ),
+            h('div', { style: { display: live.length ? 'flex' : 'none', flexDirection: 'column', gap: 6, maxHeight: 220, overflowY: 'auto' } },
+              live.map(function (item) {
+                var linked = Boolean(links[item.id])
+                var folder = String(item.cwd || '').split(/[\\/]/).filter(Boolean).pop() || ''
+                var label = item.title || item.name || folder || '会话'
+                if (item.title && item.name && item.name !== item.title) label += ' · ' + item.name
+                return h('label', { key: 'lk-' + item.id, style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' } },
+                  h('input', {
+                    type: 'checkbox',
+                    checked: linked,
+                    disabled: !linkTarget,
+                    onChange: function (event) {
+                      act({ action: 'link', desktopId: item.id, phoneId: linkTarget, off: !event.target.checked })
+                    },
+                  }),
+                  h('span', { style: { flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, label),
+                  linked ? h('span', { style: Object.assign({}, muted, { fontSize: 12, flex: '0 0 auto' }) }, '互联中') : null,
+                  item.open === false ? h('span', { style: Object.assign({}, muted, { fontSize: 12, flex: '0 0 auto' }) }, t.sessionClosed) : null,
+                )
+              }),
+            ),
+            live.length ? null : h('div', { style: muted }, t.liveNone),
             h('div', { style: { display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'stretch' } },
               h('select', {
                 value: sayLevel,
@@ -603,15 +619,27 @@ function __buildPhoneBridge(require) {
           ))
         }
 
-        if (!onPhone && state && state.thread && state.thread.length) {
+        // 没有对话时也留一块：空着会让人以为功能坏了。
+        if (!onPhone && state) {
           // 只渲染最近 24 条：面板是给人扫一眼的，不是聊天记录管理器。
-          var visible = state.thread.slice(-24)
+          var allThread = state.thread || []
+          var marked = allThread.filter(function (row) { return markOf(row.level) !== '' })
+          var visible = (showAll ? allThread : marked).slice(-24)
           children.push(h('div', { key: 'thread', style: card },
             h('div', { style: Object.assign({}, cardTitle, { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }) },
               h('span', null, t.thread),
-              h('span', { style: { fontWeight: 400 } }, visible.length + ' / ' + state.thread.length),
+              h('span', { style: { fontWeight: 400, display: 'flex', gap: 8, alignItems: 'baseline' } },
+                h('button', {
+                  type: 'button',
+                  style: Object.assign({}, button, { padding: '2px 8px', fontSize: 12, opacity: 0.75 }),
+                  onClick: function () { setShowAll(!showAll) },
+                }, showAll ? '只看紧要' : '全部 ' + allThread.length + ' 条'),
+                h('span', null, visible.length + ' / ' + (showAll ? allThread.length : marked.length)),
+              ),
             ),
-            h('div', { style: { display: 'flex', flexDirection: 'column', gap: 7, marginTop: 4, maxHeight: 320, overflowY: 'auto', paddingRight: 4 } },
+            visible.length ? null : h('div', { style: Object.assign({}, muted, { padding: '6px 0 2px' }) },
+              showAll ? '还没有对话。上面选好两边会话，在输入框里说一句试试。' : '最近没有紧要消息（带 ❗❓⚠️✅📋 的那种）。点上面「全部」看完整对话。'),
+            h('div', { style: { display: visible.length ? 'flex' : 'none', flexDirection: 'column', gap: 7, marginTop: 4, maxHeight: 320, overflowY: 'auto', paddingRight: 4 } },
               visible.map(function (row) {
                 var mine = row.from !== 'phone'
                 var mark = markOf(row.level)
