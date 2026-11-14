@@ -774,15 +774,22 @@ function __buildPhoneBridge(require) {
         useEffect(function () { load() }, [sessionId])
 
         if (!sessionId) return null
-        var links = (state && state.links) || {}
-        var on = !!links[sessionId]
+        // 手机端的开关表是从电脑同步过来的（peerLinks），键仍是电脑会话 id。
+        var onPhone = String((state && state.role) || '').toLowerCase() === 'phone'
+        var links = (state && (onPhone ? state.peerLinks : state.links)) || {}
+        var linkedKey = onPhone
+          ? Object.keys(links).filter(function (key) { return String((links[key] || {}).phoneId) === sessionId })[0]
+          : (links[sessionId] ? sessionId : '')
+        var on = !!linkedKey
 
         function toggle() {
           if (busy) return
           setBusy(true)
           setTip('')
-          var body = { action: 'link', desktopId: sessionId, off: on }
-          if (!on && state && state.collab && state.collab.phoneSessionId) {
+          var body = onPhone
+            ? { action: 'linkRemote', phoneId: sessionId, off: on }
+            : { action: 'link', desktopId: sessionId, off: on }
+          if (!onPhone && !on && state && state.collab && state.collab.phoneSessionId) {
             body.phoneId = state.collab.phoneSessionId
           }
           return fetch('/phone-bridge/config', {

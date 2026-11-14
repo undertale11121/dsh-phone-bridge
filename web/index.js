@@ -279,6 +279,8 @@ async function snapshot() {
     collab: readCollab(config),
     // 每个会话的互联开关（面板上逐行勾选）。
     links: readLinks(config),
+    // 手机端：电脑那边同步过来的开关表（真源仍写在电脑的 desktop.json 里）。
+    peerLinks: (readJson(phoneConfigPath(), null)?.peerLinks) || {},
     agents: readAgents(),
     log: readLogTail(8),
     configPath: configPath(),
@@ -360,6 +362,21 @@ async function runAction(body) {
     const info = await ensureServer(config)
     const row = await bridgePost(`http://127.0.0.1:${info.port}`, '/thread', config.token, { from: 'desktop', to: target, text, level: body.level })
     return { text: `已发到 ${target}（#${row.seq ?? '?'}）` }
+  }
+  if (body.action === 'linkRemote') {
+    // 手机端会话界面上的开关：写回电脑，真源在电脑。
+    const conf = readJson(phoneConfigPath(), null)
+    if (!conf?.url || !conf?.token) throw new Error('手机还没连上电脑：先在电脑面板上配对')
+    const phoneId = String(body.phoneId || '').trim()
+    if (!phoneId) throw new Error('要指定哪个手机会话')
+    const remoteBase = String(conf.url).replace(/\/+$/, '')
+    const payload = { phoneId, desktopId: String(body.desktopId || '').trim(), off: !!body.off }
+    const out = await bridgePost(remoteBase, '/collab', conf.token, payload)
+    if (!out || out.ok === false) throw new Error(String((out && out.text) || '电脑那边没同意'))
+    try {
+      writeJson(phoneConfigPath(), { ...conf, peerLinks: out.links || {} })
+    } catch {}
+    return { text: body.off ? '已断开这个会话的互联' : '已连上电脑上的会话' }
   }
   if (body.action === 'link') {
     // 面板上某个会话的「互联」开关：打开 = 配一个对端会话，关闭 = 删掉。
@@ -1164,11 +1181,21 @@ async function inboxTick(agents, lastReport) {
 
   let collab = null
   let peerSessions = []
+  let peerLinks = null
   try {
     const snapshot = await bridgeGet(base, '/collab', config.token, 5000)
     collab = snapshot?.collab || null
     peerSessions = Array.isArray(snapshot?.desktopSessions) ? snapshot.desktopSessions : []
+    peerLinks = snapshot?.links && typeof snapshot.links === 'object' ? snapshot.links : {}
   } catch {}
+  // 开关的真源在电脑上，手机这边只是镜像一份给会话顶部的按钮看。
+  if (peerLinks) {
+    try {
+      if (JSON.stringify(config.peerLinks || {}) !== JSON.stringify(peerLinks)) {
+        writeJson(phoneConfigPath(), { ...config, peerLinks })
+      }
+    } catch {}
+  }
   // 电脑上开着的会话也记进本机目录，手机模型才有得点名
   if (peerSessions.length) {
     try {

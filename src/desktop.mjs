@@ -531,7 +531,34 @@ class DesktopBridge {
           ok: true,
           collab: stored?.collab || null,
           desktopSessions: Array.isArray(live?.sessions) ? live.sessions : [],
+          // 手机端会话界面也要显示「互联」，所以把开关表一并带回去。
+          links: stored?.links && typeof stored.links === 'object' ? stored.links : {},
         })
+      }
+      // 手机端点那颗开关时写回来，真源始终在电脑上。
+      if (req.method === 'POST') {
+        const auth = this.parseAuth(req, url)
+        const ok =
+          auth.k === 'token' ? tokenEqual(auth.token, this.config.token) : this.verifyDevice(`${auth.id}:${auth.ts}`, auth.sig, auth.id)
+        if (!ok) return sendJson(res, 401, { ok: false })
+        const body = readBody(req)
+        const desktopId = String(body?.desktopId || '').trim()
+        const phoneId = String(body?.phoneId || '').trim()
+        if (!desktopId && !phoneId) return sendJson(res, 400, { ok: false, text: '要指定是哪一边的会话' })
+        const store = readJson(desktopConfigPath(), {})
+        const links = store?.links && typeof store.links === 'object' ? store.links : {}
+        let key = desktopId || Object.keys(links).find((id) => String(links[id]?.phoneId || '') === phoneId) || ''
+        if (!key && phoneId) {
+          // 手机端点了开关但还没配对过：接到电脑上最近开着的那个会话。
+          const liveNow = readJson(path.join(bridgeDir(), 'live.json'), {})
+          key = String((Array.isArray(liveNow?.sessions) ? liveNow.sessions[0]?.id : '') || '')
+        }
+        if (!key) return sendJson(res, 404, { ok: false, text: `手机上的 ${phoneId.replace(/^session-/, '').slice(0, 8)} 还没和任何电脑会话连起来` })
+        if (body?.off) delete links[key]
+        else links[key] = { phoneId: phoneId || String(links[key]?.phoneId || ''), at: new Date().toISOString() }
+        store.links = links
+        writeJson(desktopConfigPath(), store)
+        return sendJson(res, 200, { ok: true, links })
       }
       return sendJson(res, 405, { ok: false })
     }
