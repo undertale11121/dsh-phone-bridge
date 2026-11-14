@@ -870,7 +870,7 @@ class DesktopBridge {
     const child = spawn(process.execPath, [script, '--id', id, '--name', label, '--task', cleanTask, '--mode', 'direct', '--log', logFile], {
       detached: true,
       stdio: 'ignore',
-      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', DSH_BIN: dshBin() },
     })
     let failed = null
     child.on('error', (error) => (failed = error))
@@ -1951,7 +1951,16 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
 }
 
 // 桌面子智能体需要 `dsh` 命令行（agent-run.mjs 用它跑 headless 会话）。
+function dshBin() {
+  // 配置里点名优先，其次环境变量，最后看 PATH。
+  const configured = String(cfg()?.dshBin || '').trim()
+  if (configured) return configured
+  return process.env.DSH_BIN || 'dsh'
+}
+
 function hasDshCli() {
+  const configured = String(cfg()?.dshBin || '').trim()
+  if (configured) return fs.existsSync(configured)
   if (process.env.DSH_BIN) return true
   try {
     const probe = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['dsh'], { encoding: 'utf8', timeout: 4000 })

@@ -69,7 +69,15 @@ async function main() {
     '先看一眼工作台上有什么上下文，然后动手。做完用 agent_send 把结论发给 desktop（需要商量就用 agent_converse）。',
   ].join('\n')
 
-  const child = spawn(process.env.DSH_BIN || 'dsh', ['headless', '--patch', patch, '--json', prompt], {
+  // 光有 thread patch 只能拿到工作台工具，模型配置（provider/model/凭据）在
+  // 另一个补丁里 —— 少了它 headless 会退回 deepseek-official，然后报
+  // MISSING_CREDENTIAL（手机上加的 key 是给 custom-apitogo 那个 provider 的）。
+  const cliArgs = ['headless', '--patch', patch]
+  const modelPatch = path.join(dshHome(), 'phone-bridge', 'headless.patch.yml')
+  if (fs.existsSync(modelPatch)) cliArgs.push('--patch', modelPatch)
+  cliArgs.push('--json', prompt)
+
+  const child = spawn(process.env.DSH_BIN || 'dsh', cliArgs, {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, PHONE_BRIDGE_AGENT: ID, PHONE_BRIDGE_AGENT_NAME: NAME },
   })
