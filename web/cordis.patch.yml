@@ -1,5 +1,8 @@
-# 互联（phone-bridge）的桌面半：宿主路由 /phone-bridge/config 与 /phone-bridge/qr.svg，
-# 以及「插件」页上的卡片。MCP 那一半由 @deepseek-ai/dsh-mcp-client 的 phone-bridge 行提供。
+# ⚠️ 已废弃：这是 0.6.2 时期的「把 web 卡片拷进 profile/node_modules」流程，
+# 0.6.3 起整个仓库本身就是一个 dsh bundle（根 cordis.patch.yml + dsh.client），
+# 用「插件 → 添加插件 → 选本目录」或从市场安装即可，不要再手工拷文件。
+# 这个文件只为了让已经装旧版的人升级时不被 pnpm 当成野文件清掉而保留。
+
 - insert:
     - id: phone-bridge-web
       name: dsh-phone-bridge-web

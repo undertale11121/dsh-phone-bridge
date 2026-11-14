@@ -510,7 +510,7 @@ function installWake(ctx) {
 // 追加一行（幂等，写前备份）。补完要重启一次 DSH，下一轮启动 mcp-client 才会
 // 把工具挂上来。不想被自动改就设 PHONE_BRIDGE_NO_AUTOPATCH=1。
 
-const ENGINE_ENTRY_ID = 'dsh-phone-bridge'
+const ENGINE_ENTRY_ID = 'dsh-phone-bridge-engine'
 const ENGINE_CLIENT = '@deepseek-ai/dsh-mcp-client'
 const AUTOPATCH_ENV = 'PHONE_BRIDGE_NO_AUTOPATCH'
 
@@ -556,7 +556,9 @@ function enginePatch(engine) {
   ].join('\n')
 }
 
-const ENGINE_ROW = new RegExp(`(^|\\n)\\s*-?\\s*id:\\s*['"]?${ENGINE_ENTRY_ID}['"]?\\s*$`, 'm')
+// 认的是 serverName，不是 id：bundle 自身的行也叫 dsh-phone-bridge，光看 id 会
+// 把它误当成引擎行而永远不补。
+const ENGINE_ROW = /serverName:\s*['"]?phone-bridge['"]?\s*$/m
 
 /** 哪些 profile 装了本 bundle：bundles 列表里有它，或补丁里提到了它。 */
 function profilesWithThisBundle() {

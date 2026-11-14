@@ -526,8 +526,11 @@ window.__ModuleLoader__.load({
           console.error('[phone-bridge] card skipped: ' + error)
           return
         }
+        // The bundle now carries the package name dsh-phone-bridge (0.6.3+); older
+        // installs mounted the card under the old web package name.
         scope.slots.inject('plugins.bundle.config', function* () {
           yield scope.slots.register({ name: 'plugins.bundle.config', key: PACKAGE }, Card(React, pack, { surface: 'card' }))
+          yield scope.slots.register({ name: 'plugins.bundle.config', key: 'dsh-phone-bridge' }, Card(React, pack, { surface: 'card' }))
         })
         // The same page as a sidebar entry (next to 插件 / 插件市场), so the
         // bridge is one click away instead of buried in a plugin detail page.

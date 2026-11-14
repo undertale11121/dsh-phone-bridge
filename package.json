@@ -22,9 +22,14 @@
   "bugs": {
     "url": "https://github.com/undertale11121/dsh-phone-bridge/issues"
   },
-  "workspaces": [
-    "web"
-  ],
+  "main": "./web/index.js",
+  "exports": {
+    ".": "./web/index.js",
+    "./client": "./web/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
   "bin": {
     "dsh-phone-bridge": "bridge.mjs"
   },
@@ -34,6 +39,8 @@
     "web",
     "scripts",
     "dsh-go-plugin",
+    "locale",
+    "icon.svg",
     "cordis.patch.yml",
     "LICENSE",
     "README.md",
@@ -51,6 +58,11 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [],
+      "platform": "web",
+      "immediately": true
     }
   },
   "engines": {

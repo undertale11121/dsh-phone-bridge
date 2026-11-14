@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Phone bridge",
+    "description": "Links this desktop with a dsh-go phone: read its screen, tap it, open apps, run shell commands and move files, or hand a whole task to the phone's own model."
+  }
+}

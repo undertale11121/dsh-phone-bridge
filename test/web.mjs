@@ -152,13 +152,14 @@ check('导出 apply 与 inject', typeof client.apply === 'function' && Array.isA
 // bundle 里读 document.documentElement.lang，测试环境补一个
 globalThis.document = fakeDocument
 client.apply(ctx)
-const three = slotsSeen.length === 3
+const three = slotsSeen.length === 4
   && slotsSeen[0].descriptor.name === 'plugins.bundle.config' && slotsSeen[0].descriptor.key === 'dsh-phone-bridge-web'
-  && slotsSeen[1].descriptor.name === 'sidebar.panellist' && slotsSeen[1].descriptor.id === 'phone-bridge'
-  && slotsSeen[2].descriptor.name === 'main' && slotsSeen[2].descriptor.key === 'phone-bridge'
-check('挂到 plugins.bundle.config / sidebar.panellist / main 三个槽', three, JSON.stringify(slotsSeen.map((s) => s.descriptor)))
-check('侧栏行写的是「互联」', slotsSeen[1] && slotsSeen[1].descriptor.label() === '互联', slotsSeen[1] && String(slotsSeen[1].descriptor.label()))
-const icon = slotsSeen[1].component({ size: 18 })
+  && slotsSeen[1].descriptor.name === 'plugins.bundle.config' && slotsSeen[1].descriptor.key === 'dsh-phone-bridge'
+  && slotsSeen[2].descriptor.name === 'sidebar.panellist' && slotsSeen[2].descriptor.id === 'phone-bridge'
+  && slotsSeen[3].descriptor.name === 'main' && slotsSeen[3].descriptor.key === 'phone-bridge'
+check('挂到两个 bundle key + sidebar.panellist + main', three, JSON.stringify(slotsSeen.map((s) => s.descriptor)))
+check('侧栏行写的是「互联」', slotsSeen[2] && slotsSeen[2].descriptor.label() === '互联', slotsSeen[2] && String(slotsSeen[2].descriptor.label()))
+const icon = slotsSeen[2].component({ size: 18 })
 check('侧栏图标是 svg', icon && icon.type === 'svg' && icon.props.width === 18, icon && icon.type)
 let rendered = null
 try {
@@ -179,7 +180,7 @@ const texts = []
 })(rendered)
 check('文案是中文', texts.some((text) => text.includes('互联')), texts.slice(0, 6).join(' | '))
 // 侧栏那一页：同一个组件，但有独立滚动容器、没有卡片边框
-const page = slotsSeen[2].component({})
+const page = slotsSeen[3].component({})
 check('面板页自带滚动容器', page && page.props.style && page.props.style.overflow === 'auto' && page.props.style.height === '100%', JSON.stringify(page && page.props.style))
 check('面板页不再套卡片边框', !page.props.style.border, JSON.stringify(page.props.style))
 
@@ -239,7 +240,7 @@ check('找得到 bridge.mjs', typeof host.enginePath() === 'string' && host.engi
 const patched = host.installEngineRow()
 check('补进了引擎行', patched.length === 1 && path.resolve(patched[0]) === path.resolve(patchFile), JSON.stringify(patched))
 const afterPatch = fs.readFileSync(patchFile, 'utf8')
-check('引擎行是 mcp-client + stdio', /id: dsh-phone-bridge\s*$/m.test(afterPatch) && /name: '@deepseek-ai\/dsh-mcp-client'/.test(afterPatch) && /serverName: phone-bridge/.test(afterPatch) && /transport: stdio/.test(afterPatch), afterPatch)
+check('引擎行是 mcp-client + stdio', /id: dsh-phone-bridge-engine\s*$/m.test(afterPatch) && /name: '@deepseek-ai\/dsh-mcp-client'/.test(afterPatch) && /serverName: phone-bridge/.test(afterPatch) && /transport: stdio/.test(afterPatch), afterPatch)
 check('args 指向真实 bridge.mjs', afterPatch.includes(host.enginePath()), afterPatch)
 check('不动用户原有内容', afterPatch.includes('id: phone-bridge-web') && afterPatch.includes('用户自己的补丁'))
 const again = host.installEngineRow()
