@@ -51,7 +51,7 @@ const start = (args, env, onStderr, keepStdin = false) => {
 
 try {
   const deskLog = []
-  start([path.join(root, 'bridge.mjs'), 'desktop', '--serve', '--port', String(DESK_PORT)], { ...process.env, DSH_HOME: home, PHONE_BRIDGE_LOG: path.join(home, 'bridge.log') }, (text) => deskLog.push(text))
+  start([path.join(root, 'bridge.mjs'), 'desktop', '--serve', '--port', String(DESK_PORT)], { ...process.env, DSH_HOME: home, PHONE_BRIDGE_NO_GATE: '1', PHONE_BRIDGE_LOG: path.join(home, 'bridge.log') }, (text) => deskLog.push(text))
   const startedAt = Date.now()
   while (Date.now() - startedAt < 15_000) {
     try {
@@ -63,7 +63,7 @@ try {
   }
 
   const phoneLog = []
-  const phoneEnv = { ...process.env, DSH_HOME: home, PHONE_BRIDGE_SETUP_PORT: String(SETUP_PORT) }
+  const phoneEnv = { ...process.env, DSH_HOME: home, PHONE_BRIDGE_NO_GATE: '1', PHONE_BRIDGE_SETUP_PORT: String(SETUP_PORT) }
   start([path.join(root, 'bridge.mjs'), 'phone'], phoneEnv, (text) => phoneLog.push(text), true)
   // wait for its config page
   const pageAt = Date.now()

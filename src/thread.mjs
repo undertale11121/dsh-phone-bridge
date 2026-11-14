@@ -130,9 +130,12 @@ function rotate(all) {
   return keep
 }
 
-export function append(from, text, to = 'all', level = 'normal') {
+export function append(from, text, to = 'all', levelOrOptions = 'normal') {
   const clean = String(text ?? '').trim()
   if (!clean) throw new Error('消息是空的')
+  // 第四参既可以是 level 字符串，也可以是一个对象。对象里能带 silent/kind：
+  // silent 的行是「变更日志」——写进对话给模型下次翻，但**不唤醒**对方。
+  const options = levelOrOptions && typeof levelOrOptions === 'object' ? levelOrOptions : { level: levelOrOptions }
   const sender = String(from || 'desktop').slice(0, 40)
   const target = String(to || 'all').slice(0, 40)
   return withLock(() => {
@@ -141,10 +144,12 @@ export function append(from, text, to = 'all', level = 'normal') {
       seq: (all[all.length - 1]?.seq || 0) + 1,
       from: sender,
       to: target,
-      level: normalizeLevel(level),
+      level: normalizeLevel(options.level),
       text: clean.slice(0, MAX_TEXT),
       at: new Date().toISOString(),
     }
+    if (options.silent) row.silent = true
+    if (options.kind) row.kind = String(options.kind).slice(0, 40)
     ensureDir(path.dirname(threadPath()))
     fs.appendFileSync(threadPath(), `${JSON.stringify(row)}\n`)
     rotate(all.concat([row]))

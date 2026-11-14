@@ -868,16 +868,22 @@ async function wakeTick(agents) {
   // 继续投——宁可慢，也不能把消息永远卡在自己这儿。
   // 接收方向不节流：这些本来就是该我看见的消息，压住只会让对话卡住。
 
-  const incoming = (data.messages || []).filter(
-    (item) =>
-      item &&
-      item.from !== 'desktop' &&
-      !isNotice(item.text) &&
-      (item.to === 'desktop' || String(item.to || '').startsWith('desktop:')),
-  )
+  const skipped = []
+  const incoming = (data.messages || []).filter((item) => {
+    if (!item || item.from === 'desktop') return false
+    // silent 行是文件变更日志：留在对话里给下次翻，但**不唤醒**。
+    // 顺手把游标跨过去，否则每 3 秒都会把它们重读一遍。
+    if (item.silent === true) {
+      skipped.push(Number(item.seq) || 0)
+      return false
+    }
+    if (isNotice(item.text)) return false
+    return item.to === 'desktop' || String(item.to || '').startsWith('desktop:')
+  })
   if (!incoming.length) {
+    if (skipped.length) state.cursor = Math.max(...skipped, Number(state.cursor) || 0)
     // 没有新消息也要把 lastError 收干净，别让一条旧报错一直挂着。
-    if (state.lastError) {
+    if (state.lastError || skipped.length) {
       state.lastError = ''
       writeWakeState(state)
     }
@@ -1254,13 +1260,24 @@ async function inboxTick(agents, lastReport) {
   const link = recentLink(config)
   const pinned = String(link?.phoneId || collab?.phoneSessionId || '')
 
+  const skipped = []
   const incoming = (data?.messages || []).filter((item) => {
     if (!item || item.from === 'phone') return false
+    // 和桌面侧一致：silent 的变更日志不唤醒，但游标要跨过去。
+    if (item.silent === true) {
+      skipped.push(Number(item.seq) || 0)
+      return false
+    }
     if (isNotice(item.text)) return false
     const to = String(item.to || '')
     // 收「给手机」的，也收「点名某个手机会话」的：phone:<id | 名字 | 标题>
     return to === 'phone' || to.startsWith('phone:')
   })
+
+  if (!incoming.length && skipped.length) {
+    state.cursor = Math.max(...skipped, Number(state.cursor) || 0)
+    writeJson(inboxStatePath(), state)
+  }
 
   if (incoming.length) {
     const live = listLiveSessions(agents)

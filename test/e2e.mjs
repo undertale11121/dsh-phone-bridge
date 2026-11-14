@@ -12,7 +12,7 @@ const PORT = Number(process.env.E2E_PORT || 8899)
 
 fs.rmSync(home, { recursive: true, force: true })
 fs.mkdirSync(path.join(home, 'phone-bridge'), { recursive: true })
-const env = { ...process.env, DSH_HOME: home }
+const env = { ...process.env, DSH_HOME: home, PHONE_BRIDGE_NO_GATE: '1' }
 // The phone model needs the real profile/credentials; only the bridge data is isolated.
 if (process.env.E2E_ASK === '1') env.PHONE_BRIDGE_ASK_HOME = process.env.PHONE_BRIDGE_ASK_HOME || '/root/.dsh'
 

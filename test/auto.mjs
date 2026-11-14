@@ -11,7 +11,7 @@ const PORT = Number(process.env.E2E_PORT || 8897)
 
 fs.rmSync(home, { recursive: true, force: true })
 fs.mkdirSync(path.join(home, 'phone-bridge'), { recursive: true })
-const env = { ...process.env, DSH_HOME: home, PHONE_BRIDGE_SETUP_PORT: '8790' }
+const env = { ...process.env, DSH_HOME: home, PHONE_BRIDGE_NO_GATE: '1', PHONE_BRIDGE_SETUP_PORT: '8790' }
 
 const results = []
 const check = (name, ok, detail = '') => {

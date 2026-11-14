@@ -37,7 +37,7 @@ const desktop = new McpChild({
   name: 'desktop',
   command: process.execPath,
   args: [bridge, 'desktop'],
-  env: { ...process.env, DSH_HOME: home, PHONE_BRIDGE_SETUP_PORT: SETUP_PORT },
+  env: { ...process.env, DSH_HOME: home, PHONE_BRIDGE_NO_GATE: '1', PHONE_BRIDGE_SETUP_PORT: SETUP_PORT },
   onStderr: () => {},
 })
 await desktop.start()

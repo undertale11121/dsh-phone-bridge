@@ -591,7 +591,11 @@ class DesktopBridge {
         // 手机往工作台写消息也算「还活着」：它可能只发消息不轮询（切后台、
         // 换网络），这时 online 不该翻成 false。
         if (sender !== 'desktop') this.markSeen(body?.auth?.id)
-        const row = threadAppend(sender, body?.text, to, body?.level)
+        const row = threadAppend(sender, body?.text, to, {
+          level: body?.level,
+          silent: body?.silent === true,
+          kind: body?.kind,
+        })
         const label = known?.name || (sender === 'desktop' ? '电脑模型' : '手机模型')
         log(`对话 +1（${label}${to !== 'all' ? ` → ${to}` : ''}）${row.level !== 'normal' ? `[${row.level}]` : ''}：${truncate(row.text, 90)}`)
         return sendJson(res, 200, { ok: true, seq: row.seq, message: row })
@@ -896,6 +900,17 @@ class DesktopBridge {
       if (buf.length > MAX_FILE_BYTES) throw new Error(`文件太大：${humanSize(buf.length)}`)
       fs.mkdirSync(path.dirname(dest), { recursive: true })
       fs.writeFileSync(dest, buf)
+      // 手机往电脑写文件：记一条变更日志（silent），但不唤醒电脑模型 ——
+      // 它下次派活或看对话时能看到，没必要为一个文件改动打断它。
+      try {
+        threadAppend('phone', `📝 手机写了电脑上的 ${dest}（${humanSize(buf.length)}）`, 'all', {
+          level: 'report',
+          silent: true,
+          kind: 'file-change',
+        })
+      } catch {
+        // 记日志失败不能影响文件本身
+      }
       return { text: `已写入 ${dest}（${humanSize(buf.length)}）`, path: dest, size: buf.length }
     }
     throw new Error(`不认识的操作：${op}`)
@@ -2020,7 +2035,7 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
       if (!handler) throw new Error(`未实现：${name}`)
       // 用户要求：会话没开互联，互联类工具就当不存在（告诉智能体去打开关）。
       // 只挡跨端工具；配置/诊断类（bridge_*、phone_bridge_*）照常可用，否则出问题时连诊断都做不了。
-      if (/^(peer_|phone_|agent_|session_)/.test(name)) {
+      if (/^(peer_|phone_|agent_|session_)/.test(name) && process.env.PHONE_BRIDGE_NO_GATE !== '1') {
         const links = readJson(desktopConfigPath(), {})?.links
         if (!links || Object.keys(links).length === 0) {
           throw new Error(

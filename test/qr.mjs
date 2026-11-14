@@ -71,7 +71,7 @@ fs.rmSync(home, { recursive: true, force: true })
 fs.mkdirSync(path.join(home, 'phone-bridge'), { recursive: true })
 const desktopLog = []
 const desktop = spawn(process.execPath, [path.join(root, 'bridge.mjs'), 'desktop', '--serve', '--port', String(PORT)], {
-  env: { ...process.env, DSH_HOME: home },
+  env: { ...process.env, DSH_HOME: home, PHONE_BRIDGE_NO_GATE: '1' },
   stdio: ['ignore', 'pipe', 'pipe'],
 })
 desktop.stdout.on('data', (chunk) => desktopLog.push(String(chunk)))

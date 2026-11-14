@@ -32,7 +32,7 @@ const health = async () => (await fetch(`http://127.0.0.1:${PORT}/health`)).json
 let child = null
 try {
   child = spawn(process.execPath, [path.join(root, 'bridge.mjs'), 'desktop', '--serve', '--port', String(PORT)], {
-    env: { ...process.env, DSH_HOME: home, PHONE_BRIDGE_LOG: path.join(home, 'bridge.log') },
+    env: { ...process.env, DSH_HOME: home, PHONE_BRIDGE_NO_GATE: '1', PHONE_BRIDGE_LOG: path.join(home, 'bridge.log') },
     stdio: ['ignore', 'ignore', 'pipe'],
   })
   const started = Date.now()
