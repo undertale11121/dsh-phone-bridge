@@ -551,6 +551,17 @@ function __buildPhoneBridge(require) {
             act({ action: 'say', to: to, text: text, level: sayLevel })
             setSayText('')
           }
+          // 会话里那颗开关到底挂上没有：挂载结果由 client 顶部记在 window 上，
+          // 这里如实显示，免得「没出现」时只能猜。
+          var slotTries = window.__PB_SLOT_TRIES__ || []
+          children.push(h('div', { key: 'slotdiag', style: card },
+            h('div', { style: cardTitle }, '会话里的开关'),
+            h('div', { style: Object.assign({}, muted, { padding: '2px 0 4px' }) },
+              slotTries.length ? '注册尝试：' + slotTries.map(function (row) {
+                return (row.ok ? '✓ ' : '✗ ') + row.name + (row.ok ? '' : '（' + row.error + '）')
+              }).join('；') : 'client 还没跑到会话插槽这一段（可能要重启 DSH 让新前端生效）'),
+            h('div', { style: Object.assign({}, muted, { padding: '2px 0 0' }) },
+              '按钮在会话界面右上角工具栏。这里没有任何 ✓ 说明这个 DSH 版本的会话插槽对第三方插件不开放，那就只能走这个侧栏面板。')))
           children.push(h('div', { key: 'collab', style: card },
             h('div', { style: cardTitle }, t.collab),
             // 手机没连上时先说明白下一步，别只让下拉空着。
@@ -869,20 +880,33 @@ function __buildPhoneBridge(require) {
           })
           yield scope.slots.register({ name: 'main', key: PANEL_ID, inject: function () { return {} } }, Card(React, pack, { surface: 'panel' }))
         })
-        // 会话界面右上角那颗「互联」：列表型 session 级插槽，inject 拿当前会话。
-        try {
-          scope.slots.inject('conversation.session.header.actions', function* () {
-            yield scope.slots.register({
-              name: 'conversation.session.header.actions',
-              id: 'phone-bridge-link',
-              order: 40,
-              locale: '',
-              inject: function (sessionId) { return { sessionId: sessionId } },
-            }, LinkSwitch(React, pack))
-          })
-        } catch (error) {
-          console.error('[phone-bridge] session switch skipped: ' + error)
-        }
+        // 会话界面里的「互联」开关。host 版本之间可用插槽不完全一样，
+        // 所以按优先级逐个试，谁先挂上算谁的；挂载结果记在 window 上，
+        // 侧栏面板会把它显示出来（看不见按钮时直接看面板就知道卡在哪）。
+        var TRIES = window.__PB_SLOT_TRIES__ || (window.__PB_SLOT_TRIES__ = [])
+        var Switch = LinkSwitch(React, pack)
+        var candidates = [
+          { name: 'conversation.session.header.actions', order: 40 },
+          { name: 'conversation.session.header.utilities', order: 40 },
+          { name: 'conversation.input.dock', order: 40 },
+        ]
+        candidates.forEach(function (candidate) {
+          try {
+            scope.slots.inject(candidate.name, function* () {
+              yield scope.slots.register({
+                name: candidate.name,
+                id: 'phone-bridge-link',
+                order: candidate.order,
+                locale: '',
+                inject: function (sessionId) { return { sessionId: sessionId } },
+              }, Switch)
+            })
+            TRIES.push({ name: candidate.name, ok: true, at: Date.now() })
+          } catch (error) {
+            TRIES.push({ name: candidate.name, ok: false, error: String((error && error.message) || error), at: Date.now() })
+            console.error('[phone-bridge] ' + candidate.name + ' skipped: ' + error)
+          }
+        })
       })
     }
 
