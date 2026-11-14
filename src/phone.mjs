@@ -1259,16 +1259,20 @@ export function askHome() {
   }
   const home = path.join(bridgeDir(), 'home')
   ensureDir(home)
-  const source = path.join(dshHome(), '.credentials.yaml')
-  const target = path.join(home, '.credentials.yaml')
-  if (fs.existsSync(source) && !fs.existsSync(target)) {
+  // 凭据有两种存法：老的 .credentials.yaml，以及新版 llm-deepseek/files-v3.json。
+  // 只链了前者的话，手机上的子智能体会起得来但报 MISSING_CREDENTIAL。
+  for (const name of ['.credentials.yaml', 'llm-deepseek']) {
+    const source = path.join(dshHome(), name)
+    const target = path.join(home, name)
+    if (!fs.existsSync(source) || fs.existsSync(target)) continue
     try {
       fs.symlinkSync(source, target)
     } catch {
       try {
-        fs.copyFileSync(source, target)
+        if (fs.statSync(source).isDirectory()) fs.cpSync(source, target, { recursive: true })
+        else fs.copyFileSync(source, target)
       } catch {
-        /* no credentials is fine: the patch enables the store from DSH_HOME */
+        /* 没凭据也能跑：patch 会从 DSH_HOME 里取 */
       }
     }
   }
