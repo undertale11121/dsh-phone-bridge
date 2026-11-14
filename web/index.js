@@ -461,7 +461,7 @@ function writeWakeState(value) {
  * Deliver one user message into a live Session through the engine's own agent
  * service, the same path the Web UI uses.
  */
-export async function wakeSession(agents, sessionId, text, mode = 'queue') {
+export async function wakeSession(agents, sessionId, text, mode = 'queue', options = {}) {
   const agent = agents?.get?.(sessionId)
   if (!agent) {
     // 会话没在这个引擎里打开（切走了、重启过、或者 id 记错了）就别硬投。
@@ -471,6 +471,13 @@ export async function wakeSession(agents, sessionId, text, mode = 'queue') {
       ? `；当前开着 ${open.length} 个会话：${open.map((row) => row.id.slice(0, 8)).join('、')}`
       : '；当前一个会话都没开'
     throw new Error(`会话 ${String(sessionId).slice(0, 8)}… 没开在引擎里${hint}。先把它切到前台，或用工牌 ID 重新指定`)
+  }
+  // 对方正在生成（一回合没跑完）时别 followup：那会排进 inbox，界面上就多出
+  // 一条「等待发送」的消息气泡——用户的原话是「有时候会出现等待发送的对方模型
+  // 消息」。等它空下来再投，反正消息留在工作台上不丢，3 秒后还会再试。
+  const status = String(agent.status || '')
+  if (!options.force && status && status !== 'idle') {
+    throw new Error(`会话 ${String(sessionId).slice(0, 8)}… 正忙（${status}），这条消息等它空下来再投`)
   }
   const message = {
     id: crypto.randomUUID(),
@@ -518,6 +525,28 @@ async function alignCursor(fetchThread, viewer = 'desktop') {
 // 注意：这只管**发送**方向。接收方向（别人发给我的话）不能压——那是该我看见的消息，
 // 压 120 秒等于让对话卡住。所以 wakeTick/inboxTick 都不用它，留给 say/peer_say。
 const REPLY_WAIT_MS = 120_000
+
+// 模型之间说的话是给模型看的，不是给用户读的：单条最多 700 字，一批最多 2000 字。
+// 用户的原话是「每次你俩发消息，出现一大串，影响我看回答」—— 所以硬性截断，
+// 全文仍然留在工作台上，想查随时能查。
+const MAX_ONE_MESSAGE = 700
+const MAX_ONE_BATCH = 2000
+
+function clipText(value, max) {
+  const body = String(value == null ? '' : value).trim()
+  if (body.length <= max) return body
+  return `${body.slice(0, max)}…（已截断，全文 ${body.length} 字还在工作台上）`
+}
+
+export function composeBatch(incoming, who) {
+  const rows = Array.isArray(incoming) ? incoming : []
+  const lines = rows.map((item) => clipText(item.text, MAX_ONE_MESSAGE))
+  const body = lines.length === 1 ? lines[0] : lines.map((line, index) => `${index + 1}. ${line}`).join('\n\n')
+  const head = rows.length > 1 ? `【来自${who}的消息 · ${rows.length} 条】\n` : `【来自${who}的消息】\n`
+  const room = MAX_ONE_BATCH - head.length
+  const kept = body.length <= room ? body : `${body.slice(0, Math.max(0, room))}…（已截断）`
+  return head + kept
+}
 
 async function wakeTick(agents) {
   const config = readConfig()
@@ -588,32 +617,41 @@ async function wakeTick(agents) {
   const pinned = collab.desktopSessionId || wake.sessionId || readActive()?.sessionId || ''
   const pickByPinned = pinned ? live.find((row) => row.id === pinned) : null
 
+  // 同一个会话的消息合成一条投。用户的原话是「每次你俩发消息，出现一大串，
+  // 影响我看回答」—— 逐条 followup 会把对话刷屏，而模型之间的话本来也不需要
+  // 那么啰嗦：合并成一条，超长截断，全文仍留在工作台上可查。
+  const groups = new Map()
   for (const item of incoming) {
     const named = String(item.to || '').startsWith('desktop:') ? String(item.to).slice('desktop:'.length) : ''
     let sessionId = pickByPinned?.id || live[0]?.id || ''
     if (named) {
       const row = resolveNamed(named)
-      if (row) sessionId = row.id
-      else {
-        // 名字找不到就退回到「开着的那个」，消息不能丢
-        sessionId = pickByPinned?.id || live[0]?.id || ''
-      }
+      // 名字找不到就退回到「开着的那个」，消息不能丢
+      sessionId = row ? row.id : pickByPinned?.id || live[0]?.id || ''
     }
     if (!sessionId) {
       // 一个会话都没开着：**cursor 不前进**，下次再试；消息留在工作台上不丢。
       state.lastError = 'DSH 里现在没有开着的会话，这条消息留在工作台等你打开对话'
       continue
     }
-    const text = `【来自${item.from === 'phone' ? '手机模型' : item.from}的消息】\n${item.text}`
+    if (!groups.has(sessionId)) groups.set(sessionId, [])
+    groups.get(sessionId).push(item)
+  }
+
+  const sentSeqs = []
+  for (const [sessionId, items] of groups) {
+    const who = items[0].from === 'phone' ? '手机模型' : String(items[0].from || '对方')
     try {
-      state.lastWake = await wakeSession(agents, sessionId, text, wake.mode)
+      state.lastWake = await wakeSession(agents, sessionId, composeBatch(items, who), wake.mode)
       state.lastError = ''
-      state.cursor = Number(item.seq || state.cursor)
+      for (const item of items) sentSeqs.push(Number(item.seq) || 0)
     } catch (error) {
       state.lastError = String(error?.message || error)
       break
     }
   }
+  // cursor 只推到最后一条**确实投出去**的消息，没投的留着下次再来。
+  if (sentSeqs.length) state.cursor = Math.max(...sentSeqs, Number(state.cursor) || 0)
   writeWakeState(state)
 }
 
@@ -831,16 +869,15 @@ async function inboxTick(agents, lastReport) {
       writeJson(inboxStatePath(), state)
       return lastReport
     }
-    for (const item of incoming) {
-      try {
-        state.lastWake = await wakeSession(agents, target.id, `【来自电脑模型的消息】\n${item.text}`, 'queue')
-        state.lastError = ''
-        state.cursor = Number(item.seq || state.cursor)
-      } catch (error) {
-        state.lastError = String(error?.message || error)
-        break
-      }
+    const sent = []
+    try {
+      state.lastWake = await wakeSession(agents, target.id, composeBatch(incoming, '电脑模型'), 'queue')
+      state.lastError = ''
+      for (const item of incoming) sent.push(Number(item.seq) || 0)
+    } catch (error) {
+      state.lastError = String(error?.message || error)
     }
+    if (sent.length) state.cursor = Math.max(...sent, Number(state.cursor) || 0)
     writeJson(inboxStatePath(), state)
   }
 
