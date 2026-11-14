@@ -1236,6 +1236,9 @@ function installWake(ctx) {
   // 两边各管一个方向，不然同一句话会被投两次。
   if (isPhone()) return
   if (typeof ctx.inject !== 'function') return
+  // 同 installInbox：一个进程只能有一个轮询，否则同一个游标被多份定时器抢着写。
+  if (globalThis.__phoneBridgeWakeStarted) return
+  globalThis.__phoneBridgeWakeStarted = true
   ctx.inject(['agents'], (scope) => {
     agentsRef = scope.agents
     bindLiveTarget(scope.agents)
@@ -1569,6 +1572,10 @@ async function inboxTick(agents, lastReport) {
 function installInbox(ctx) {
   if (!isPhone()) return
   if (typeof ctx.inject !== 'function') return
+  // 同一个引擎进程里 apply 可能被调用多次（热重载、多个入口），每多一个收件器就多一个
+  // 3 秒轮询，它们各自持有自己的游标、互相覆盖 state —— 表现就是同一条消息被反复重投。
+  if (globalThis.__phoneBridgeInboxStarted) return
+  globalThis.__phoneBridgeInboxStarted = true
   ctx.inject(['agents'], (scope) => {
     // 收件器出问题最难查：定时器里的错误会被吞掉，界面上只看到「消息没来」。
     // 所以启动和每次失败都留一行在 bridge 目录，出事了直接看文件。
