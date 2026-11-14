@@ -499,21 +499,31 @@ export class PhoneBridge {
 
   async ensureRelay() {
     if (this.relay) return this.relay
-    if (!fs.existsSync(RELAY)) throw new Error(`找不到手机桥接中继：${RELAY}`)
-    if (!fs.existsSync(RELAY_CONFIG)) throw new Error(`找不到手机桥接配置：${RELAY_CONFIG}`)
-    const child = new McpChild({
-      command: process.execPath,
-      args: [RELAY, RELAY_CONFIG],
-      name: 'phone-relay',
-      env: { ...process.env, DSH_PHONE_RELAY: '1' },
-      requestTimeoutMs: 120_000,
-    })
-    await child.start()
-    this.relay = child
-    child.onExit = () => {
-      this.relay = null
-    }
-    return child
+    // 两个工具调用同时进来时，await child.start() 这段时间 this.relay 还是 null，
+    // 会各起一个中继（手机上表现为两个 relay.cjs 抢同一份配置）。复用同一个 Promise。
+    if (this.relayPending) return this.relayPending
+    this.relayPending = (async () => {
+      try {
+        if (!fs.existsSync(RELAY)) throw new Error(`找不到手机桥接中继：${RELAY}`)
+        if (!fs.existsSync(RELAY_CONFIG)) throw new Error(`找不到手机桥接配置：${RELAY_CONFIG}`)
+        const child = new McpChild({
+          command: process.execPath,
+          args: [RELAY, RELAY_CONFIG],
+          name: 'phone-relay',
+          env: { ...process.env, DSH_PHONE_RELAY: '1' },
+          requestTimeoutMs: 120_000,
+        })
+        await child.start()
+        this.relay = child
+        child.onExit = () => {
+          this.relay = null
+        }
+        return child
+      } finally {
+        this.relayPending = null
+      }
+    })()
+    return this.relayPending
   }
 
   // The relay/APK cannot run two tool calls at once; serialize them.
