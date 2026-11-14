@@ -118,7 +118,8 @@ const batch = host.composeBatch([
 check('多条消息合成一句提示', batch.includes('手机模型 2 条') && batch.includes('第一条') && batch.split('\n').length >= 2, batch)
 check('提示里带 peer_read 的指引', batch.includes('peer_read'), batch)
 const longOne = host.composeBatch([{ from: 'phone', text: 'x'.repeat(5000) }], '手机模型')
-check('长消息只带摘要不贴全文', longOne.length < 600 && longOne.includes('5000 字'), `${longOne.length}:${longOne}`)
+check('长消息只带摘要不贴全文', longOne.length < 220 && longOne.includes('5000 字'), `${longOne.length}:${longOne}`)
+check('摘要最多 80 字（手机上一屏放得下）', (longOne.split('\n')[1] || '').length <= 82, longOne)
 
 // 暗号：发送方标了 level，唤醒语头上就带符号，一眼看出要不要放下手上的活。
 const urgentOne = host.composeBatch([{ from: 'phone', text: '快看', level: 'urgent' }], '手机模型')

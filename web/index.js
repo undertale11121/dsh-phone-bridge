@@ -697,7 +697,7 @@ const REPLY_WAIT_MS = 120_000
 // 所以投进去的只是一句**唤醒语**：谁发的、几条、多少字、开头一小段。
 // 全文留在工作台上（peer_read 拿），但唤醒语里带一小段原文——两个模型要
 // 商量着干活，光看到「N 条」不知道对方要什么，结果就是各干各的。
-const PEEK_CHARS = 200
+const PEEK_CHARS = 80
 
 // 两端约定的暗号：发送方标 level，唤醒语里就带对应符号，一眼看出要不要
 // 放下手上的活。web 半不能 import ../src/*，所以和 src/thread.mjs 各存一份。
@@ -761,10 +761,9 @@ export function composeBatch(incoming, who) {
   // 符号本身就说明了要紧程度，别再加「（重要，等你回）」这种括号——
   // 用户原话：「你都有暗号了，干嘛还要加个括号说要你决定」。
   const mark = LEVEL_MARKS[level] ? `${LEVEL_MARKS[level]} ` : ''
-  return (
-    `${mark}【互联】${head}（${total} 字）${when}\n${peek}\n` +
-    '（全文在工作台，peer_read 看完整内容；回话时顺带说一句你这边的进度，对方才知道你在干哪一半。）'
-  )
+  // 手机上这条会占一整屏（字体是 DSH/Flutter 那边渲染的，插件改不了字号），
+  // 所以只能压内容：摘要 80 字 + 一行极短提示。
+  return `${mark}【互联】${head}（${total} 字）${when}\n${peek}\n（全文：peer_read）`
 }
 
 // 把 phone:<…> / desktop:<…> 后面那截认成一个具体会话：可以是完整 id、
