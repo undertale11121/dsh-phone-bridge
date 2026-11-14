@@ -826,6 +826,7 @@ class DesktopBridge {
   authenticate(body) {
     const incoming = body?.device || {}
     const id = String(incoming.id || '')
+    const previousId = this.device?.id || ''
     this.device = {
       id,
       name: String(incoming.name || 'phone'),
@@ -857,7 +858,10 @@ class DesktopBridge {
     } catch (error) {
       log(`保存设备信息失败：${error?.message || error}`)
     }
-    this.failPending('手机重新连接，打断未完成的任务')
+    // 手机每次长轮询重连都会走到这里。重连不该打断正在跑的任务：网络抖一下
+    // 就 failPending，手机上还在执行的 shell / 构建结果就无处可回，而副作用
+    // 已经发生了。只有换了设备（或首次认证）才清空未完成的请求。
+    if (previousId !== id) this.failPending('手机重新连接，打断未完成的任务')
   }
 
   nextRequests(waitMs) {

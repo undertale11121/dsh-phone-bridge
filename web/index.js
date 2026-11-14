@@ -1503,6 +1503,8 @@ async function inboxTick(agents, lastReport) {
     const misses = []
     const fails = []
     const failedSeqs = []
+    // 「目标还不在」和「投递失败」要分开：前者可以等，后者才该放弃。
+    const blockedSeqs = []
     for (const [key, rows] of groups) {
       const src = key.startsWith('d:') ? key.slice(2) : ''
       const want = key.startsWith('phone:') ? key.slice('phone:'.length) : ''
@@ -1520,8 +1522,10 @@ async function inboxTick(agents, lastReport) {
       }
       if (!target) {
         misses.push(want)
-        // 找不到目标的也必须算「没投出去」，否则游标会跨过它们，消息就永久丢了。
-        for (const item of rows) failedSeqs.push(Number(item.seq) || 0)
+        // 找不到目标 ≠ 投递失败：目标可能过一会儿就开了。绝不能进 failedSeqs ——
+        // 那条路会「连续 3 次放弃 → skip → 游标越过」，消息就永久丢了。
+        // 放进 blockedSeqs，游标会停在它前面，等目标出现再投。
+        for (const item of rows) blockedSeqs.push(Number(item.seq) || 0)
         continue
       }
       try {
