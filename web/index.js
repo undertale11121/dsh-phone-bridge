@@ -526,26 +526,19 @@ async function alignCursor(fetchThread, viewer = 'desktop') {
 // 压 120 秒等于让对话卡住。所以 wakeTick/inboxTick 都不用它，留给 say/peer_say。
 const REPLY_WAIT_MS = 120_000
 
-// 模型之间说的话是给模型看的，不是给用户读的：单条最多 700 字，一批最多 2000 字。
-// 用户的原话是「每次你俩发消息，出现一大串，影响我看回答」—— 所以硬性截断，
-// 全文仍然留在工作台上，想查随时能查。
-const MAX_ONE_MESSAGE = 700
-const MAX_ONE_BATCH = 2000
-
-function clipText(value, max) {
-  const body = String(value == null ? '' : value).trim()
-  if (body.length <= max) return body
-  return `${body.slice(0, max)}…（已截断，全文 ${body.length} 字还在工作台上）`
-}
+// 用户的原话是「可以对话发在后台，然后页面只发一点内容唤醒模型」——
+// 所以投进去的只是一句**唤醒语**：谁发的、几条、多少字、开头一小段。
+// 全文留在工作台上，模型自己调 peer_read 去拿，不占对话。
+const PEEK_CHARS = 60
 
 export function composeBatch(incoming, who) {
   const rows = Array.isArray(incoming) ? incoming : []
-  const lines = rows.map((item) => clipText(item.text, MAX_ONE_MESSAGE))
-  const body = lines.length === 1 ? lines[0] : lines.map((line, index) => `${index + 1}. ${line}`).join('\n\n')
-  const head = rows.length > 1 ? `【来自${who}的消息 · ${rows.length} 条】\n` : `【来自${who}的消息】\n`
-  const room = MAX_ONE_BATCH - head.length
-  const kept = body.length <= room ? body : `${body.slice(0, Math.max(0, room))}…（已截断）`
-  return head + kept
+  if (!rows.length) return ''
+  const total = rows.reduce((sum, item) => sum + String(item?.text == null ? '' : item.text).length, 0)
+  const first = String(rows[0]?.text == null ? '' : rows[0].text).replace(/\s+/g, ' ').trim()
+  const peek = first.length > PEEK_CHARS ? `${first.slice(0, PEEK_CHARS)}…` : first
+  const head = rows.length > 1 ? `${who}发来 ${rows.length} 条消息，共 ${total} 字` : `${who}发来 1 条消息，${total} 字`
+  return `【互联】${head}。\n开头：${peek}\n全文在工作台，调 peer_read 看完整内容再回。`
 }
 
 async function wakeTick(agents) {

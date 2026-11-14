@@ -109,14 +109,16 @@ new Function('window', source)(fakeWindow)
 check('客户端 bundle 调用 __ModuleLoader__.load', Boolean(loaded) && loaded.id === 'dsh-phone-bridge-web')
 check('新旧两个包名都注册了 client', loadedIds.includes('dsh-phone-bridge') && loadedIds.includes('dsh-phone-bridge-web'), loadedIds.join(','))
 
-// 模型之间的话要短：多条合成一条、超长截断（用户嫌刷屏）。
+// 只投一句唤醒语：全文留在工作台，模型自己 peer_read 去拿（用户的原话：
+// 「可以对话发在后台，然后页面只发一点内容唤醒模型」）。
 const batch = host.composeBatch([
   { from: 'phone', text: '第一条' },
   { from: 'phone', text: '第二条' },
 ], '手机模型')
-check('多条消息合成一条', batch.includes('2 条') && batch.includes('1. 第一条') && batch.includes('2. 第二条'), batch)
+check('多条消息合成一句唤醒语', batch.includes('手机模型发来 2 条消息') && batch.includes('peek') === false && batch.includes('开头：第一条'), batch)
+check('唤醒语里带 peer_read 的指引', batch.includes('peer_read'), batch)
 const longOne = host.composeBatch([{ from: 'phone', text: 'x'.repeat(5000) }], '手机模型')
-check('单条超长被截断', longOne.length < 900 && longOne.includes('已截断'), String(longOne.length))
+check('长消息在页面里只剩开头一小段', longOne.length < 300 && longOne.includes('5000 字'), `${longOne.length}:${longOne}`)
 
 const tree = []
 const fakeDocument = { documentElement: { lang: 'zh-CN' } }
