@@ -986,9 +986,19 @@ export class PhoneBridge {
     const id = `${(label.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fa5]+/g, '-').replace(/^-+|-+$/g, '') || 'agent').slice(0, 18)}-${Math.random().toString(36).slice(2, 6)}`
     const logFile = path.join(bridgeDir(), 'agents', `${id}.log`)
     const script = fileURLToPath(new URL('./agent-run.mjs', import.meta.url))
-    const child = spawn(process.execPath, [script, '--id', id, '--name', label, '--task', cleanTask, '--mode', 'http', '--setup', `http://127.0.0.1:${process.env.PHONE_BRIDGE_SETUP_PORT || 8789}`, '--log', logFile], {
-      detached: true,
-      stdio: 'ignore',
+    let child
+    try {
+      child = spawn(process.execPath, [script, '--id', id, '--name', label, '--task', cleanTask, '--mode', 'http', '--setup', `http://127.0.0.1:${process.env.PHONE_BRIDGE_SETUP_PORT || 8789}`, '--log', logFile], {
+        detached: true,
+        stdio: 'ignore',
+      })
+    } catch (error) {
+      throw new Error(`子智能体进程起不来：${String(error?.message || error)}`)
+    }
+    // 不监听 'error' 的话，ENOENT/EACCES/EMFILE 会以未处理的 error 事件把整个
+    // bridge 进程打死（桌面侧有这个监听，手机侧之前漏了）。
+    child.on('error', (error) => {
+      log(`子智能体 ${id} 进程出错：${String(error?.message || error)}`)
     })
     child.unref()
     this.subagents = this.subagents || new Map()

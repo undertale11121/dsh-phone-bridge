@@ -389,7 +389,9 @@ async function runAction(body) {
     const out = await bridgePost(remoteBase, '/collab', conf.token, payload)
     if (!out || out.ok === false) throw new Error(String((out && out.text) || '电脑那边没同意'))
     try {
-      writeJson(path.join(bridgeDir(), 'peer-links.json'), out.links || {})
+      // 只合并对端给的那几个键。这个文件同时还存着「自动分身映射」，
+      // 整份覆盖会把自动建立的映射抹掉，下一条同源消息就会在手机上重开一个会话。
+      writeJson(path.join(bridgeDir(), 'peer-links.json'), { ...readPeerLinks(), ...(out.links || {}) })
     } catch {}
     return { text: body.off ? '已断开这个会话的互联' : '已连上电脑上的会话' }
   }
@@ -907,15 +909,19 @@ async function wakeTick(agents) {
   if (!wake.enabled || !config.token) return
 
   // 首次启动：把 cursor 对齐到「现在最后一条」，一条历史都不投。
-  if (!state.cursor) {
+  // 空工作台时 last 是 0，也要落一个 aligned 标记 —— 否则每个 tick 都重新对齐，
+  // 等第一条消息落盘正好被对齐成「已处理」，消息就永远不投了。
+  if (!state.aligned && !state.cursor) {
     try {
       const last = await alignCursor((query) => threadPath(config, query))
-      if (last > 0) {
-        state.cursor = last
-        state.lastError = ''
-        writeWakeState(state)
-      }
-    } catch {}
+      state.cursor = Math.max(Number(state.cursor) || 0, last)
+      state.aligned = true
+      state.lastError = ''
+      writeWakeState(state)
+    } catch (error) {
+      state.lastError = `对齐游标失败：${String(error?.message || error)}`
+      writeWakeState(state)
+    }
     return
   }
 
@@ -1383,15 +1389,19 @@ async function inboxTick(agents, lastReport) {
   const state = readJson(inboxStatePath(), { cursor: 0, lastError: '' })
 
   // 和桌面侧一个规矩：第一次跑先把 cursor 对齐到最新，不把历史灌进会话。
-  if (!state.cursor) {
+  if (!state.aligned && !state.cursor) {
     try {
       const last = await alignCursor((query) => bridgeGet(base, `/thread?${query}`, config.token, 8000), 'phone')
-      if (last > 0) {
-        state.cursor = last
-        state.lastError = ''
-        writeJson(inboxStatePath(), state)
-      }
-    } catch {}
+      // 工作台为空时 last 是 0，也要记下「已对齐」，否则每个 tick 都重对齐，
+      // 等第一条消息落盘正好被对齐成已处理，永远不投。
+      state.cursor = Math.max(Number(state.cursor) || 0, last)
+      state.aligned = true
+      state.lastError = ''
+      writeJson(inboxStatePath(), state)
+    } catch (error) {
+      state.lastError = `对齐游标失败：${String(error?.message || error)}`
+      writeJson(inboxStatePath(), state)
+    }
     return lastReport
   }
 
