@@ -17,14 +17,24 @@ const brief = (text, max = 40) => {
 }
 
 async function api(pathname, method = 'GET', body) {
-  const res = await fetch(SETUP + pathname, {
-    method,
-    headers: body ? { 'content-type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(4000),
-  })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
+  const attempt = async () => {
+    const res = await fetch(SETUP + pathname, {
+      method,
+      headers: body ? { 'content-type': 'application/json' } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(2500),
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    return res.json()
+  }
+  try {
+    return await attempt()
+  } catch (error) {
+    // 首次安装/刚重启时 bridge 正在被引擎拉起来，这一两秒里点按钮会白失败。
+    // 等 700ms 再试一次，能救掉大部分「第一次找电脑说桥接没运行」。
+    await new Promise((resolve) => setTimeout(resolve, 700))
+    return attempt()
+  }
 }
 
 function offlineState() {
@@ -163,7 +173,7 @@ export function apply(ctx) {
             const result = await api('/api/action', 'POST', { id: 'find', fields: {} })
             return { toast: brief(String(result?.text || '').split('\n')[0], 44), refresh: true }
           } catch {
-            return { toast: '桥接没在运行' }
+            return { toast: '桥接还没起来：等两秒再点一次，或重启手机引擎' }
           }
         },
         connect: async () => {
@@ -179,7 +189,7 @@ export function apply(ctx) {
             await api('/api/state')
             return { refresh: true }
           } catch {
-            return { toast: '桥接没在运行' }
+            return { toast: '桥接还没起来：等两秒再点一次，或重启手机引擎' }
           }
         },
         ping: async () => {
@@ -187,7 +197,7 @@ export function apply(ctx) {
             const result = await api('/api/action', 'POST', { id: 'ping', fields: {} })
             return { toast: brief(result?.text || '已发送'), refresh: true }
           } catch {
-            return { toast: '桥接没在运行，先重启引擎' }
+            return { toast: '桥接还没起来，重启一下手机引擎' }
           }
         },
         unpair: async () => {
@@ -195,7 +205,7 @@ export function apply(ctx) {
             await api('/api/action', 'POST', { id: 'unpair', fields: {} })
             return { toast: '已断开并清除配对', refresh: true }
           } catch {
-            return { toast: '桥接没在运行' }
+            return { toast: '桥接还没起来：等两秒再点一次，或重启手机引擎' }
           }
         },
       },
