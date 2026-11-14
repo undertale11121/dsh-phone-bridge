@@ -1714,7 +1714,13 @@ export async function runDesktopMcp() {
       const row = threadAppend('desktop', args?.text, to, { level: args?.level, desktopId: args?.from })
       const peer = to === 'all' ? '所有人（不会唤醒对端）' : nameOf(to)
       const mark = LEVELS[row.level]?.mark ? `${LEVELS[row.level].mark} ` : ''
-      return `${mark}已发出（第 ${row.seq} 条 → ${peer}，重要性 ${LEVELS[row.level]?.label || '普通'}）。对方收件器几秒内会把它投进开着的会话并唤醒模型；要当场等回话用 agent_converse。`
+      // 没带 from 的时候对端只能兜底投到默认会话，用户看到的现象是「又全灌进同一个对话」，
+      // 很难分辨是没传还是没实现 —— 所以在返回值里直接说清。
+      const fromId = args?.from ? String(args.from).replace(/^session-/, '').slice(0, 8) : ''
+      const origin = fromId
+        ? `来自 ${fromId} 的会话`
+        : '没带 from（对端会投到默认会话，不同会话的对话会串在一起）'
+      return `${mark}已发出（第 ${row.seq} 条 → ${peer}，${origin}，重要性 ${LEVELS[row.level]?.label || '普通'}）。对方收件器几秒内会把它投进开着的会话并唤醒模型；要当场等回话用 agent_converse。`
     },
     async agent_converse(args) {
       const to = String(args?.to || 'phone')
