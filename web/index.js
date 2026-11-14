@@ -592,6 +592,24 @@ export function composeBatch(incoming, who) {
   return `【互联】${head}（${total} 字），peer_read 看全文再回。`
 }
 
+// 把 phone:<…> / desktop:<…> 后面那截认成一个具体会话：可以是完整 id、
+// 去掉 session- 的裸 uuid、手动起的名字，或者左侧栏那个标题。
+export function matchSession(live, want) {
+  const key = String(want == null ? '' : want).trim()
+  if (!key) return null
+  const rows = Array.isArray(live) ? live : []
+  const plain = key.replace(/^psess:/, '').replace(/^session-/, '')
+  return (
+    rows.find((row) => {
+      const id = String(row?.id || '')
+      const bare = id.replace(/^session-/, '')
+      return id === key || `psess:${id}` === key || bare === plain
+    }) ||
+    rows.find((row) => String(row?.name || '') === key || String(row?.title || '') === key) ||
+    null
+  )
+}
+
 async function wakeTick(agents) {
   const config = readConfig()
   const wake = readWake(config)
@@ -679,8 +697,9 @@ async function wakeTick(agents) {
     const named = String(item.to || '').startsWith('desktop:') ? String(item.to).slice('desktop:'.length) : ''
     let sessionId = pickByPinned?.id || live[0]?.id || ''
     if (named) {
-      const row = resolveNamed(named)
+      // 点名的会话：先按 id / 裸 uuid / 左边栏标题认，再退到会话目录里的名字。
       // 名字找不到就退回到「开着的那个」，消息不能丢
+      const row = matchSession(live, named) || resolveNamed(named)
       sessionId = row ? row.id : pickByPinned?.id || live[0]?.id || ''
     }
     if (!sessionId) {
@@ -1001,26 +1020,47 @@ async function inboxTick(agents, lastReport) {
     if (!item || item.from === 'phone') return false
     if (isNotice(item.text)) return false
     const to = String(item.to || '')
-    return to === 'phone' || (pinned && to === `phone:${pinned}`)
+    // 收「给手机」的，也收「点名某个手机会话」的：phone:<id | 名字 | 标题>
+    return to === 'phone' || to.startsWith('phone:')
   })
 
   if (incoming.length) {
     const live = listLiveSessions(agents)
-    const target = (pinned && live.find((row) => row.id === pinned)) || live[0] || null
-    if (!target) {
+    if (!live.length) {
       // 和桌面侧一个规矩：没会话就**不动 cursor**，消息留着，绝不吞。
       state.lastError = `手机上现在没有开着的会话，${incoming.length} 条消息留在工作台`
       writeJson(inboxStatePath(), state)
       return lastReport
     }
-    const sent = []
-    try {
-      state.lastWake = await wakeSession(agents, target.id, composeBatch(incoming, '电脑模型'), 'queue')
-      state.lastError = ''
-      for (const item of incoming) sent.push(Number(item.seq) || 0)
-    } catch (error) {
-      state.lastError = String(error?.message || error)
+    const fallback = (pinned && live.find((row) => row.id === pinned)) || live[0] || null
+    // 按收件人分组：没点名的给 fallback，点了名的投给它点的那一个
+    const groups = new Map()
+    for (const item of incoming) {
+      const to = String(item.to || '')
+      const key = to.startsWith('phone:') ? to : 'phone'
+      if (!groups.has(key)) groups.set(key, [])
+      groups.get(key).push(item)
     }
+    const sent = []
+    const misses = []
+    const fails = []
+    for (const [key, rows] of groups) {
+      const want = key === 'phone' ? '' : key.slice('phone:'.length)
+      const target = want ? matchSession(live, want) : fallback
+      if (!target) {
+        misses.push(want)
+        continue
+      }
+      try {
+        state.lastWake = await wakeSession(agents, target.id, composeBatch(rows, '电脑模型'), 'queue')
+        for (const item of rows) sent.push(Number(item.seq) || 0)
+      } catch (error) {
+        fails.push(String(error?.message || error))
+      }
+    }
+    if (fails.length) state.lastError = fails[0]
+    else if (misses.length) state.lastError = `找不到这些手机会话：${misses.join('、')}`
+    else state.lastError = ''
     if (sent.length) state.cursor = Math.max(...sent, Number(state.cursor) || 0)
     writeJson(inboxStatePath(), state)
   }
