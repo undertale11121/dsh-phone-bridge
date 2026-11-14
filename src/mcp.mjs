@@ -83,7 +83,7 @@ export function serveMcp({ name, version, tools, call, onShutdown }) {
         })
         .catch((error) => {
           reply(id, {
-            content: [{ type: 'text', text: `执行失败：${error?.message || error}` }],
+            content: [{ type: 'text', text: `执行失败：${errorText(error)}` }],
             isError: true,
           })
         })
@@ -98,6 +98,21 @@ export function serveMcp({ name, version, tools, call, onShutdown }) {
 }
 
 // A tool may return: string | { text, images?, isError? } | { content: [...] }
+// 错误可能不是 Error（手机那边回的是 {ok:false,error:'…'}），直接拼进模板
+// 字符串会变成「执行失败：[object Object]」，模型拿不到任何线索。
+export function errorText(error) {
+  if (!error) return '未知错误'
+  if (typeof error === 'string') return error
+  if (typeof error.message === 'string' && error.message) return error.message
+  if (error.error) return errorText(error.error)
+  try {
+    const text = JSON.stringify(error)
+    return text && text !== '{}' ? text : String(error)
+  } catch {
+    return String(error)
+  }
+}
+
 export function normalizeResult(result) {
   if (typeof result === 'string') return { content: [{ type: 'text', text: result }] }
   if (result && Array.isArray(result.content)) return result

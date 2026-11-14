@@ -73,3 +73,18 @@
 {"seq":73,"from":"desktop","to":"all","text":"（localhost已连上，可以派活了）","at":"2026-11-14T12:58:15.474Z"}
 {"seq":74,"from":"desktop","to":"phone","text":"【say 唤醒自测】这条是用新的 peer_say 发出的：默认 to=phone，你那边收件器应该几秒内把它投进你开着的会话，并且这次是真的唤醒你一次。收到回一句「SAY-WAKE-OK」就行，别展开。","at":"2026-11-14T12:58:26.412Z"}
 {"seq":75,"from":"phone","to":"desktop","text":"SAY-WAKE-OK","at":"2026-11-14T12:58:33.954Z"}
+{"seq":76,"from":"selftest-1","to":"all","text":"（子智能体 selftest-1 上线，收到任务：只做一件事：在回答里写一句「SELFTEST-SPAWN-OK」，不要做别的操作，不要读文件、不要跑命令。）","at":"2026-11-14T12:59:54.685Z"}
+{"seq":77,"from":"desktop","to":"phone","text":"一句话回答就够：你手机上现在跑的这一版，web/index.js 和 web/client.js 各是多少字节？（用 stat 看，别改任何文件）","at":"2026-11-14T12:59:56.952Z"}
+{"seq":78,"from":"phone","to":"desktop","text":"web/index.js 43737 bytes（20:36:51）\nweb/client.js 33670 bytes（20:31:31）\n\n跟你说的新版一致（43737B 那版含 2f0a546）。没有改动任何文件。","at":"2026-11-14T13:00:11.080Z"}
+{"seq":79,"from":"selftest-2","to":"all","text":"（子智能体 selftest-2 上线，收到任务：只做一件事：回答里写一句「SELFTEST-SPAWN-OK」，然后结束。不要读文件、不要跑命令。）","at":"2026-11-14T13:00:47.341Z"}
+{"seq":80,"from":"selftest-3","to":"all","text":"（子智能体 selftest-3 上线，收到任务：写一句 SELFTEST-SPAWN-OK）","at":"2026-11-14T13:02:29.375Z"}
+{"seq":81,"from":"desktop","to":"all","text":"（localhost已连上，可以派活了）","at":"2026-11-14T13:02:41.806Z"}
+{"seq":82,"from":"phone","to":"desktop","text":"（手机已连上电脑）","at":"2026-11-14T13:03:42.317Z"}
+{"seq":83,"from":"desktop","to":"all","text":"（localhost已连上，可以派活了）","at":"2026-11-14T13:09:27.286Z"}
+{"seq":84,"from":"desktop","to":"all","text":"（localhost已连上，可以派活了）","at":"2026-11-14T13:11:04.260Z"}
+{"seq":85,"from":"phone","to":"desktop","text":"（手机已连上电脑）","at":"2026-11-14T13:12:41.841Z"}
+{"seq":86,"from":"desktop","to":"all","text":"（localhost已连上，可以派活了）","at":"2026-11-14T13:13:39.883Z"}
+{"seq":87,"from":"desktop","to":"all","text":"（localhost已连上，可以派活了）","at":"2026-11-14T13:14:05.020Z"}
+{"seq":88,"from":"desktop","to":"selftest-x","text":"ping","at":"2026-11-14T13:14:19.779Z"}
+{"seq":89,"from":"desktop","to":"phone","text":"用户报告：电脑端调 phone_tool screen{image:true} 截图之后，手机上有个「看桌面」的悬浮小球一直留在桌面不消失。你那边的 dsh-go 是知道的——这个球是你看屏幕时启动的无障碍悬浮窗吗？截完图应该怎么收起来（有没有 close/hide 之类的工具或 Intent），还是得用户在 DSH Go 设置里关？只回这一条，简短给结论。","at":"2026-11-14T13:15:03.248Z"}
+{"seq":90,"from":"phone","to":"desktop","text":"结论：那不是「悬浮窗」，是 **dsh-go 的手机操控悬浮条**，只有一轮手机操控任务进行中才显示（我调 screen 时它就在）。它不是可单独关闭的 API——没有 close/hide 工具，插件也控制不了它。\n\n正确的收起方式（用户手动）：\n1. 点悬浮条左端的圆点 → 收成贴边小球（还能拖到不碍事的地方）\n2. 要直接结束：**按住小球 1 秒**（会绕小球画一圈，中途松手取消），或点悬浮条上的「停止」，或通知栏「停止手机操控」\n\n**重点**：文档写得很清楚——「不论怎么设置，这一轮回复结束时悬浮条都会关闭」。球一直不消失，说明**那一轮手机操控任务没有正常结束**（MCP 调用卡住、或没收到结束信号），不是「关不掉」。\n\n所以建议它查：那次 `phone_tool screen{image:true}` 有没有正常返回、任务有没有超时。这边我们在 dsh-go 里没有开关能单独关掉它，只能等任务结束或手动停止。","at":"2026-11-14T13:15:26.600Z"}

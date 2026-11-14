@@ -575,10 +575,10 @@ export function composeBatch(incoming, who) {
   const rows = Array.isArray(incoming) ? incoming : []
   if (!rows.length) return ''
   const total = rows.reduce((sum, item) => sum + String(item?.text == null ? '' : item.text).length, 0)
-  const first = String(rows[0]?.text == null ? '' : rows[0].text).replace(/\s+/g, ' ').trim()
-  const peek = first.length > PEEK_CHARS ? `${first.slice(0, PEEK_CHARS)}…` : first
-  const head = rows.length > 1 ? `${who}发来 ${rows.length} 条消息，共 ${total} 字` : `${who}发来 1 条消息，${total} 字`
-  return `【互联】${head}。\n开头：${peek}\n全文在工作台，调 peer_read 看完整内容再回。`
+  // 页面里只留一行提示：正文留在工作台，模型要看就自己 peer_read。
+  // 之前还带「开头：<前 60 字>」，长消息在对话流里仍然占两三行，用户明确要求只提示。
+  const head = rows.length > 1 ? `${who} ${rows.length} 条` : `${who} 1 条`
+  return `【互联】${head}（${total} 字），peer_read 看全文再回。`
 }
 
 async function wakeTick(agents) {

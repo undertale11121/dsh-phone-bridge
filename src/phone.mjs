@@ -583,7 +583,7 @@ export class PhoneBridge {
     const result = await new Promise((resolve) => {
       const child = spawn('dsh', cliArgs, {
         cwd: fs.existsSync(cwd) ? cwd : undefined,
-        env: { ...process.env, HOME: process.env.HOME || '/root', DSH_HOME: askHome },
+        env: { ...process.env, HOME: process.env.HOME || '/root', DSH_HOME: askHome() },
         stdio: ['ignore', 'pipe', 'pipe'],
       })
       let buffer = ''
@@ -811,6 +811,10 @@ export class PhoneBridge {
       const data = fs.readFileSync(target).toString('base64')
       return { path: target, b64: data, images: [{ mimeType: 'image/png', data }], text: `截图：${target}` }
     }
+    // screencap 失败时常常留下一个 0 字节的文件，别让它冒充证据。
+    try {
+      if (fs.existsSync(target)) fs.unlinkSync(target)
+    } catch {}
     return null
   }
 
@@ -1716,9 +1720,25 @@ export async function runPhoneMcp({ withMcp = true } = {}) {
       return result.plan || '（没有返回计划）'
     },
     async phone_screenshot(args) {
+      // proot 里跑的 agent 是应用 uid（10193），没有 READ_FRAME_BUFFER，screencap
+      // 必然产出 0 字节；先问 relay（无障碍服务截图，不受这个限制），再退到 screencap。
+      let relayText = ''
+      let relayError = ''
+      try {
+        const result = await bridge.callTool('screen', { image: true }, 90_000)
+        relayText = String(result?.text || '')
+        if (result?.images?.length) return { text: result.text || '截图已附上', images: result.images }
+      } catch (error) {
+        relayError = error?.message || String(error)
+      }
       const shot = await bridge.screenshot(args)
-      if (!shot) throw new Error('截图失败：screencap 没产出文件（可能没有存储权限）')
-      return { text: shot.text, images: shot.images }
+      if (shot) return { text: shot.text, images: shot.images }
+      const why = relayText || relayError || 'relay 没有返回图像'
+      throw new Error(
+        `这次截不到图：${why}\n` +
+          '如果是银行、支付、密码输入这类页面，Android 禁止截图（FLAG_SECURE），换任何工具都拿不到；' +
+          '如果提示「不允许读取的应用」，去 DSH Go 的权限设置里把那个应用加入允许名单再试。',
+      )
     },
     async bridge_setup() {
       return `配置页：http://127.0.0.1:${setupPort}/  （在手机浏览器打开；电脑端也有自己的配置页）`

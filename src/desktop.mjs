@@ -22,7 +22,7 @@ import net from 'node:net'
 import fs, { statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { randomUUID, randomBytes, randomInt } from 'node:crypto'
 import {
@@ -851,14 +851,37 @@ class DesktopBridge {
       if (result?.error) throw new Error(result.error)
       return result.agent
     }
+    // 子智能体靠 `dsh headless` 跑一整轮，桌面 DSH 桌面版不一定带命令行，
+    // 没有就直接说清楚，别留一条「已停止」的空记录让人以为它跑过了。
+    if (!hasDshCli()) {
+      throw new Error(
+        '这台电脑上没找到 dsh 命令行，桌面子智能体起不来。两个办法：\n' +
+          '· 设环境变量 DSH_BIN 指向 dsh 可执行文件后重试；\n' +
+          "· 或改用 host:'phone'，在手机上跑（那边有 /opt/dsh 的 dsh）。",
+      )
+    }
     const id = newAgentId(label)
     const logFile = path.join(bridgeDir(), 'agents', `${id}.log`)
+    ensureDir(path.dirname(logFile))
     const script = fileURLToPath(new URL('./agent-run.mjs', import.meta.url))
+    // process.execPath 在这里是 Electron 的可执行文件，不带 ELECTRON_RUN_AS_NODE
+    // 就会被当成 GUI 启动（参数被忽略、立刻退出），子智能体等于没跑；以前 stdio
+    // 设成 ignore，失败完全静默，界面上只留下一条「已停止」的记录。
     const child = spawn(process.execPath, [script, '--id', id, '--name', label, '--task', cleanTask, '--mode', 'direct', '--log', logFile], {
       detached: true,
       stdio: 'ignore',
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
     })
+    let failed = null
+    child.on('error', (error) => (failed = error))
     child.unref()
+    // 立刻看一眼：能起来的话 600ms 内不会退出
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    if (failed || child.exitCode !== null) {
+      const tail = readLogTail(logFile, 20)
+      removeAgent(id)
+      throw new Error(`子智能体没能启动（${failed?.message || `退出码 ${child.exitCode}`}）${tail ? `\n${tail}` : ''}`)
+    }
     const record = addAgent({
       id,
       name: label,
@@ -1545,6 +1568,12 @@ export async function runDesktopMcp() {
     async agent_converse(args) {
       const to = String(args?.to || 'phone')
       const seconds = Math.min(Math.max(Number(args?.waitSeconds || 120), 5), 600)
+      // 名字打错时别让人干等两分钟：先确认这个收件人真的存在。
+      const wellKnown = ['all', 'phone', 'desktop']
+      const targeted = to.includes(':') || wellKnown.includes(to)
+      if (!targeted && !listAgents().some((item) => item.id === to || item.name === to)) {
+        throw new Error(`没有这个收件人：${to}（可写 all / phone / desktop / phone:<会话名> / desktop:<会话名>，或用 agent_list 看有哪些）`)
+      }
       const row = threadAppend('desktop', args?.text, to)
       log(`等 ${nameOf(to)} 回话（最多 ${seconds}s）…`)
       const deadline = Date.now() + seconds * 1000
@@ -1671,7 +1700,10 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
       const clientUrl = process.env.PHONE_BRIDGE_CLIENT_URL || ''
       const localBase = `http://${target.host}:${target.port}`
       const peer = await fetchHealth(localBase, 2000)
-      const peerHasClient = peer && peer.sshClient === true
+      // 指定的机器连不上时必须报错，不能悄悄退回到手机上执行——那样命令
+      // 会跑在完全没被点名的设备上，输出还看着「成功」。
+      if (!peer) throw new Error(`连不上那台机器：${localBase}（确认对端的 dsh-phone-bridge 在跑，host:port 没写错）`)
+      const peerHasClient = peer.sshClient === true
       if (clientUrl && peerHasClient && compareEndpoint(`${target.host}:${target.port}`, clientUrl) < 0) {
         return `已在该主机上直接执行（它在自己的 DSH 里就跑着这条命令，不必走手机长轮询）。\n${await runLocalShell(args)}`
       }
@@ -1680,7 +1712,10 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
         { command: args.command, cwd: args.cwd, timeoutMs: args.timeoutMs || 120000 },
         { timeoutMs: Math.max(60_000, Number(args.timeoutMs || 120000) + 30_000) },
       )
-      return formatShell(data)
+      // 那台机器上没跑 dsh 客户端时，命令只能落到手机上；说清楚，别让人以为
+      // 是在点名的机器上执行的。
+      const note = peerHasClient ? '' : `（${target.host}:${target.port} 上没跑 dsh 客户端，这条命令实际在手机上执行）\n`
+      return note + formatShell(data)
     },
     async peer_put(args) {
       if (!cfg().allowFiles) throw new Error('桌面端配置禁用了文件传输')
@@ -1913,6 +1948,17 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
     dropLock()
     process.exit(0)
   })
+}
+
+// 桌面子智能体需要 `dsh` 命令行（agent-run.mjs 用它跑 headless 会话）。
+function hasDshCli() {
+  if (process.env.DSH_BIN) return true
+  try {
+    const probe = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['dsh'], { encoding: 'utf8', timeout: 4000 })
+    return probe.status === 0 && String(probe.stdout || '').trim() !== ''
+  } catch {
+    return false
+  }
 }
 
 // 对端是谁：跑在 Android 上就是手机（对端=桌面），否则是桌面（对端=手机）。
