@@ -165,6 +165,25 @@ export function pair(string) {
   return config
 }
 
+const lastSourcePath = () => path.join(bridgeDir(), 'last-desktop.json')
+
+// 手机模型回话时常常只写 `to: 'desktop'`，那会落到电脑侧的默认会话上，
+// 结果在别的会话里根本看不到回复。收到消息时记下来源，15 分钟内回话自动点名回去。
+export function lastDesktopSource() {
+  const saved = readJson(lastSourcePath(), null)
+  if (!saved?.desktopId) return ''
+  if (Date.now() - Number(saved.at || 0) > 15 * 60_000) return ''
+  return String(saved.desktopId)
+}
+
+// 只改「不点名的 desktop」；显式 desktop:<id>、phone:* 一概不动。
+export function autoAddress(to) {
+  const target = String(to || '').trim() || 'desktop'
+  if (target !== 'desktop') return target
+  const src = lastDesktopSource()
+  return src ? `desktop:${src}` : target
+}
+
 function baseUrl(url) {
   return url.replace(/\/+$/, '')
 }
@@ -927,7 +946,7 @@ export class PhoneBridge {
 
   async sendAs(from, to, text, level) {
     if (!String(text || '').trim()) throw new Error('消息是空的')
-    return await this.post('/thread', { from, to, text, level })
+    return await this.post('/thread', { from, to: autoAddress(to), text, level })
   }
 
   async readAs(as, since = 0, limit = 20) {
@@ -936,7 +955,7 @@ export class PhoneBridge {
 
   async converseAs(from, to, text, waitSeconds = 120) {
     const seconds = Math.min(Math.max(Number(waitSeconds || 120), 5), 600)
-    const row = await this.sendAs(from, to, text)
+    const row = await this.sendAs(from, autoAddress(to), text)
     const deadline = Date.now() + seconds * 1000
     while (Date.now() < deadline) {
       const wait = Math.max(Math.min(deadline - Date.now(), 25_000), 1_000)
@@ -1022,7 +1041,7 @@ export class PhoneBridge {
   async say(text, to = 'desktop') {
     const clean = String(text ?? '').trim()
     if (!clean) throw new Error('消息是空的')
-    const target = String(to || 'desktop').trim() || 'desktop'
+    const target = autoAddress(to)
     const row = await this.post('/thread', { from: 'phone', text: clean, to: target })
     const cache = loadCache()
     saveCache({ ...cache, messages: [...(cache.messages || []), row.message].slice(-400), next: row.seq })

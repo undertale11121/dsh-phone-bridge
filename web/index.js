@@ -1229,6 +1229,25 @@ async function reportPhoneSessions(agents, base, token) {
   }
 }
 
+const lastSourcePath = () => path.join(bridgeDir(), 'last-desktop.json')
+
+// 手机侧按「来源电脑会话」分身：一个电脑会话对应一个手机会话。
+// 第一次收到某个电脑会话的消息就新建一个，映射记在 phone.json.peerLinks
+// （手机本地，不碰 desktop.json，免得两端互相覆盖）。
+async function ensureDesktopSession(agents, live, desktopId) {
+  const cfg = readJson(phoneConfigPath(), {}) || {}
+  const known = (cfg.peerLinks || {})[desktopId]
+  if (known && live.some((row) => row.id === known)) return { id: known }
+  if (typeof agents?.create !== 'function') throw new Error('这台引擎不支持自动新开会话（agents.create 不可用）')
+  const id = `session-${crypto.randomUUID()}`
+  await agents.create({ sessionId: id, agentOptions: {} })
+  const next = readJson(phoneConfigPath(), {}) || {}
+  next.peerLinks = { ...(next.peerLinks || {}), [desktopId]: id }
+  writeJson(phoneConfigPath(), next)
+  log(`给电脑会话 ${String(desktopId).replace(/^session-/, '').slice(0, 8)} 开了一个手机会话 ${id.slice(0, 8)}`)
+  return { id }
+}
+
 async function inboxTick(agents, lastReport) {
   const config = readJson(phoneConfigPath(), null)
   if (!config?.url || !config?.token) return lastReport
@@ -1316,11 +1335,13 @@ async function inboxTick(agents, lastReport) {
       return lastReport
     }
     const fallback = (pinned && live.find((row) => row.id === pinned)) || live[0] || null
-    // 按收件人分组：没点名的给 fallback，点了名的投给它点的那一个
+    // 分组：带 desktopId 的按「来源电脑会话」各自分身；没带的保持老规矩
+    // （点名的投给点名那个，没点名的投给 pinned / 最近活会话）。
     const groups = new Map()
     for (const item of incoming) {
       const to = String(item.to || '')
-      const key = to.startsWith('phone:') ? to : 'phone'
+      const src = item.desktopId ? String(item.desktopId) : ''
+      const key = src ? `d:${src}` : (to.startsWith('phone:') ? to : 'phone')
       if (!groups.has(key)) groups.set(key, [])
       groups.get(key).push(item)
     }
@@ -1328,15 +1349,30 @@ async function inboxTick(agents, lastReport) {
     const misses = []
     const fails = []
     for (const [key, rows] of groups) {
-      const want = key === 'phone' ? '' : key.slice('phone:'.length)
-      const target = want ? matchSession(live, want) : fallback
+      const src = key.startsWith('d:') ? key.slice(2) : ''
+      const want = key.startsWith('phone:') ? key.slice('phone:'.length) : ''
+      let target = null
+      if (src) {
+        try {
+          target = await ensureDesktopSession(agents, live, src)
+        } catch (error) {
+          fails.push(`给电脑会话 ${src.replace(/^session-/, '').slice(0, 8)} 开分身失败：${error?.message || error}`)
+          continue
+        }
+      } else {
+        target = want ? matchSession(live, want) : fallback
+      }
       if (!target) {
         misses.push(want)
         continue
       }
       try {
-        state.lastWake = await wakeSession(agents, target.id, composeBatch(rows, '电脑模型'), 'queue')
+        // 第一句告诉模型「这是哪个电脑会话的对话」，否则它不知道自己接的是谁的活
+        const head = src ? `（这是电脑会话 ${src.replace(/^session-/, '').slice(0, 8)} 的对话）\n` : ''
+        state.lastWake = await wakeSession(agents, target.id, head + composeBatch(rows, '电脑模型'), 'queue')
         for (const item of rows) sent.push(Number(item.seq) || 0)
+        // 记住来源：回话时 sendAs/say 会把不点名的 desktop 自动改成 desktop:<来源>
+        if (src) writeJson(lastSourcePath(), { desktopId: src, phoneId: target.id, at: Date.now() })
       } catch (error) {
         fails.push(String(error?.message || error))
       }
