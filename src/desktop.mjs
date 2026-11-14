@@ -29,6 +29,7 @@ import {
   beaconProbe,
   bridgeDir,
   compareEndpoint,
+  dshHome,
   scanLan,
   desktopConfigPath,
   ensureDir,
@@ -66,6 +67,16 @@ const MAX_BODY = 24 * 1024 * 1024
 
 export function bridgeScriptPath() {
   return path.resolve(fileURLToPath(new URL('../bridge.mjs', import.meta.url)))
+}
+
+// 与宿主半共用 desktop.json：整份覆盖会把对方刚写的字段冲掉（wake、devices 都丢过）。
+// 所有写入统一走「先读盘上最新，再叠加自己的改动」。
+export function patchDesktopConfig(changes) {
+  const disk = readJson(desktopConfigPath(), null) || {}
+  const next = { ...disk, ...changes }
+  if (next.pendingNewSession === null) delete next.pendingNewSession
+  writeJson(desktopConfigPath(), next)
+  return next
 }
 
 export function loadDesktopConfig() {
@@ -608,8 +619,7 @@ class DesktopBridge {
         if (!key) {
           // 用户 m04603：手机上点开互联、电脑上却一个会话都没开 —— 别报错，
           // 留张便签给宿主半，让它开一个新会话再接上。
-          store.pendingNewSession = { phoneId, at: new Date().toISOString() }
-          writeJson(desktopConfigPath(), store)
+          patchDesktopConfig({ pendingNewSession: { phoneId, at: new Date().toISOString() } })
           return sendJson(res, 200, { ok: true, pending: true, text: '电脑上没有开着的会话，正在给你开一个新的…' })
         }
         if (body?.off) delete links[key]
@@ -801,7 +811,7 @@ class DesktopBridge {
     if (row) Object.assign(row, next)
     else devices.push(next)
     try {
-      writeJson(desktopConfigPath(), this.config)
+      patchDesktopConfig({ devices: this.config.devices })
       log(`已记住手机设备：${next.name} ${id.slice(0, 8)}…`)
     } catch (error) {
       log(`保存设备信息失败：${error?.message || error}`)
@@ -840,7 +850,7 @@ class DesktopBridge {
       }
     }
     try {
-      writeJson(desktopConfigPath(), this.config)
+      patchDesktopConfig({ devices: this.config.devices, peers: this.config.peers })
     } catch (error) {
       log(`保存设备信息失败：${error?.message || error}`)
     }
@@ -1655,8 +1665,7 @@ export async function runDesktopMcp() {
         return { text: found.length ? found.map((f) => `${f.host}:${f.port} ${f.name || ''}`.trim()).join('\n') : '没扫到；确认手机和电脑在同一 Wi-Fi，或直接用配对串。' }
       }
       if (id === 'token') {
-        config.token = randomToken()
-        writeJson(desktopConfigPath(), config)
+        patchDesktopConfig({ token: randomToken() })
         return { text: `已生成新配对串；手机若还连得上会继续用设备密钥自动重连。\n${bridge.pairing().join('\n')}` }
       }
       if (id === 'log') {
@@ -1665,8 +1674,7 @@ export async function runDesktopMcp() {
       if (id.startsWith('toggle:')) {
         const [, key, value] = id.split(':')
         if (key in config) {
-          config[key] = value === '1'
-          writeJson(desktopConfigPath(), config)
+          patchDesktopConfig({ [key]: value === '1' })
           return { text: `已${config[key] ? '开启' : '关闭'} ${key}` }
         }
       }
@@ -1712,9 +1720,9 @@ export async function runDesktopMcp() {
       // 消息（to === 'phone' / 'desktop'），广播的话它不会投递、也就不会唤醒。
       const to = String(args?.to || defaultPeerTarget())
       // 模型不知道自己开在哪个会话里（MCP 没有 caller 这个概念），所以没传 from 时
-      // 用宿主半刚写下的「最近活跃会话」当来源。否则对端只能兜底投到默认会话，
+      // 用「最近有人说话的会话」当来源。否则对端只能兜底投到默认会话，
       // 用户看到的现象就是「在别的会话里说话，消息却全灌进插件那个对话」。
-      const guessed = args?.from ? '' : readJson(path.join(bridgeDir(), 'live.json'), {})?.sessions?.[0]?.id
+      const guessed = args?.from ? '' : newestDesktopSessionId()
       const desktopId = args?.from ? String(args.from) : guessed || undefined
       const row = threadAppend('desktop', args?.text, to, { level: args?.level, desktopId })
       const peer = to === 'all' ? '所有人（不会唤醒对端）' : nameOf(to)
@@ -2111,13 +2119,9 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
       if (!handler) throw new Error(`未实现：${name}`)
       // 用户要求：会话没开互联，互联类工具就当不存在（告诉智能体去打开关）。
       // 只挡跨端工具；配置/诊断类（bridge_*、phone_bridge_*）照常可用，否则出问题时连诊断都做不了。
-      if (/^(peer_|phone_|agent_|session_)/.test(name) && process.env.PHONE_BRIDGE_NO_GATE !== '1') {
-        const links = readLinksFile()
-        if (!links || Object.keys(links).length === 0) {
-          throw new Error(
-            '这个会话没开互联，互联工具现在不可用。先在这个会话顶部点「🔗 互联」（或让对端用 peer_link 开一个），开了之后这些工具立刻能用。',
-          )
-        }
+      if (process.env.PHONE_BRIDGE_NO_GATE !== '1') {
+        const gate = gateMessage(name, readLinksFile() || {}, newestDesktopSessionId())
+        if (gate) throw new Error(gate)
       }
       return handler(args)
     },
@@ -2159,6 +2163,52 @@ function hasDshCli() {
 function defaultPeerTarget() {
   const android = process.platform === 'android' || fs.existsSync('/sdcard')
   return android ? 'desktop' : 'phone'
+}
+
+// 会话级开关：只有「正在说话的那个会话」开了互联，跨端工具才放行。
+// MCP 协议没有 caller，所以 current 是推断出来的（见 newestDesktopSessionId）。
+// 扫不到任何会话时退化成「只要有一处开了就放行」，否则连排查都做不了。
+export function gateMessage(name, links, current) {
+  const tool = String(name || '')
+  // phone_bridge_* 是配置/诊断工具（看状态、开桥接、拿配对串），任何时候都得能用，
+  // 否则出问题时连「怎么开互联」都没法查。注意它同样以 phone_ 开头，要排在前面。
+  if (/^phone_bridge_/.test(tool)) return ''
+  if (!/^(peer_|phone_|agent_|session_)/.test(tool)) return ''
+  const opened = current ? Boolean(links?.[current]) : Object.keys(links || {}).length > 0
+  if (opened) return ''
+  const who = current ? `${String(current).replace(/^session-/, '').slice(0, 8)} ` : ''
+  return `这个会话（${who}）没开互联，互联工具现在不可用。在会话顶部点「🔗 互联」打开，开了之后这些工具立刻能用。`
+}
+
+// 模型调用工具时不知道自己开在哪个会话里（MCP 协议没有 caller），所以「这条消息是从
+// 哪个会话发出来的」只能推断。宿主半写的 live.json 是 3 秒一轮的快照，引擎刚起来时
+// 可能还是空的，所以这里直接扫 projcache：文件 mtime 最新 = 最近有人在这个会话里说话。
+// 注意用 mtime 而不是 identity.createdAt —— 后者是「会话哪时候建的」，刚从别的会话切
+// 回来时会读到很早的时间，排序就反了。
+export function newestDesktopSessionId() {
+  const dir = path.join(dshHome(), 'storages', 'session_projcache', 'sessions')
+  let names = []
+  try {
+    names = fs.readdirSync(dir)
+  } catch {
+    return ''
+  }
+  let best = ''
+  let stamp = 0
+  for (const name of names) {
+    if (!name.startsWith('session-') || !name.endsWith('.json')) continue
+    let hit = 0
+    try {
+      hit = fs.statSync(path.join(dir, name)).mtimeMs
+    } catch {
+      continue
+    }
+    if (hit > stamp) {
+      stamp = hit
+      best = name.slice(0, -5)
+    }
+  }
+  return best
 }
 
 // Windows has no bash by default: pick a shell that exists. A missing binary
@@ -2236,8 +2286,7 @@ function savePeer(pairString) {
   } else {
     peers.push({ host: target.host, port: target.port, token: target.token })
   }
-  config.peers = peers
-  writeJson(desktopConfigPath(), config)
+  patchDesktopConfig({ peers })
   return target
 }
 

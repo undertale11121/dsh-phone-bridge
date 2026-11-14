@@ -46,7 +46,8 @@ export function ensurePeerLink({ config, identity, isDial, endpoint, onOpen }) {
         this.tick().catch((error) => log(`链路维护失败：${error?.message || error}`))
       }, 30_000)
       timer.unref?.()
-      this.tick().catch(() => {})
+      // 首轮失败也要留痕：否则「配对好了但连不上」会完全没有日志可查。
+      this.tick().catch((error) => log(`首轮链路检查失败：${error?.message || error}`))
     },
 
     stop() {

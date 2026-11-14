@@ -45,6 +45,16 @@ function writeJson(file, value) {
   fs.renameSync(temp, file)
 }
 
+// desktop.json 同时被两个进程写（宿主半 + 桥接）。整份覆盖会把对方刚写的字段冲掉
+// —— links 和 devices 都因此丢过。所有写入统一走「先读盘上最新，再叠加自己的改动」。
+export function patchConfig(changes) {
+  const disk = readJson(configPath(), null) || {}
+  const next = { ...disk, ...changes }
+  if (next.pendingNewSession === null) delete next.pendingNewSession
+  writeJson(configPath(), next)
+  return next
+}
+
 function defaults() {
   return {
     token: '',
@@ -296,13 +306,11 @@ async function runAction(body) {
   if (body.action === 'toggle') {
     const key = String(body.key || '')
     if (!TOGGLES.includes(key)) throw new Error('不认识的开关')
-    config[key] = Boolean(body.value)
-    writeJson(configPath(), config)
-    return { text: `已${config[key] ? '允许' : '关闭'} ${key}` }
+    patchConfig({ [key]: Boolean(body.value) })
+    return { text: `已${Boolean(body.value) ? '允许' : '关闭'} ${key}` }
   }
   if (body.action === 'token') {
-    config.token = crypto.randomBytes(16).toString('hex')
-    writeJson(configPath(), config)
+    patchConfig({ token: crypto.randomBytes(16).toString('hex') })
     return { text: '已换新配对串；登记过的手机仍会用设备密钥重连' }
   }
   if (body.action === 'permit' || body.action === 'code') {
@@ -336,8 +344,7 @@ async function runAction(body) {
     if (typeof body.enabled === 'boolean') wake.enabled = body.enabled
     if (typeof body.sessionId === 'string') wake.sessionId = body.sessionId.trim()
     if (body.mode === 'steer' || body.mode === 'queue') wake.mode = body.mode
-    config.wake = wake
-    writeJson(configPath(), config)
+    patchConfig({ wake })
     if (typeof body.text === 'string' && body.text.trim()) {
       const agents = wakeAgents()
       if (!agents) return { text: '设置已保存；引擎里还没挂上 agents 服务，等一会儿再试' }
@@ -415,13 +422,15 @@ async function runAction(body) {
     if (typeof body.phoneName === 'string') collab.phoneName = body.phoneName.trim()
     config.collab = collab
     // 钉了电脑会话就等于告诉唤醒器「投给它」，不用再让用户去另一个开关里填一遍。
+    const changes = { collab }
     if (collab.desktopSessionId) {
       const wake = readWake(config)
       wake.sessionId = collab.desktopSessionId
       wake.enabled = true
       config.wake = wake
+      changes.wake = wake
     }
-    writeJson(configPath(), config)
+    patchConfig(changes)
     const parts = []
     parts.push(collab.desktopSessionId ? `电脑会话 ${collab.desktopSessionId.slice(0, 8)}…` : '电脑会话未选')
     parts.push(collab.phoneSessionId ? `手机会话 ${(collab.phoneName || collab.phoneSessionId).slice(0, 16)}` : '手机会话未选')
@@ -855,8 +864,7 @@ async function fulfilPendingSession() {
   const links = readLinks()
   links[id] = { phoneId: String(pending.phoneId), at: new Date().toISOString() }
   writeLinks(links)
-  delete config.pendingNewSession
-  writeJson(configPath(), config)
+  patchConfig({ pendingNewSession: null })
   return id
 }
 
@@ -1164,7 +1172,7 @@ function bindLiveTarget(agents) {
         wake.sessionId = only
         config.wake = wake
         try {
-          writeJson(configPath(), config)
+          patchConfig({ wake })
         } catch {}
       }
       return only

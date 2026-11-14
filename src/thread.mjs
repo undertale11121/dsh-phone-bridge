@@ -113,6 +113,19 @@ export function normalizeLevel(value) {
 export const MAX_ROWS = 800
 export const KEEP_ROWS = 400
 
+// 写文件走「临时文件 + rename」：rename 在同一分区是原子的，中途断电/崩溃最多留下
+// 一个 .tmp，不会出现「主文件被清空」或「归档写了一半」这种丢消息的状态。
+function writeAtomic(file, text) {
+  const tmp = `${file}.tmp-${process.pid}`
+  try {
+    fs.writeFileSync(tmp, text)
+    fs.renameSync(tmp, file)
+  } catch (error) {
+    try { fs.unlinkSync(tmp) } catch {}
+    throw error
+  }
+}
+
 function rotate(all) {
   if (all.length <= MAX_ROWS) return all
   const cut = all.length - KEEP_ROWS
@@ -121,8 +134,8 @@ function rotate(all) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
   const archive = path.join(path.dirname(threadPath()), `thread-archive-${stamp}.jsonl`)
   try {
-    fs.writeFileSync(archive, `${old.map((row) => JSON.stringify(row)).join('\n')}\n`)
-    fs.writeFileSync(threadPath(), `${keep.map((row) => JSON.stringify(row)).join('\n')}\n`)
+    writeAtomic(archive, `${old.map((row) => JSON.stringify(row)).join('\n')}\n`)
+    writeAtomic(threadPath(), `${keep.map((row) => JSON.stringify(row)).join('\n')}\n`)
     log(`对话文件轮转：${old.length} 条归档到 ${path.basename(archive)}，保留最近 ${keep.length} 条`)
   } catch (error) {
     log(`对话文件轮转失败（不影响收发）：${error?.message || error}`)
