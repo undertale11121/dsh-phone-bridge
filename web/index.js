@@ -463,6 +463,18 @@ async function wakeTick(agents) {
     return
   }
 
+  // 先看有没有活会话。可能早就不剩一个（用户全关了、或者重启后没打开任何对话），
+  // 这时候**连 cursor 都不能动**：动了下条新消息来了也拿不到，等于直接吞掉。
+  const liveBefore = listLiveSessions(agents)
+  if (!liveBefore.length) {
+    const message = `DSH 里没有开着的会话，${incoming.length} 条消息留在工作台等你打开对话`
+    if (message !== state.lastError) {
+      state.lastError = message
+      writeWakeState(state)
+    }
+    return
+  }
+
   // agents.get() 只认「当前引擎进程里的活 agent」（dsh-agent: "Look up a live agent"），
   // 而会话 id 可能来自卡片填写、active.json 或文件名推断——大概率拿不到。
   // 所以不点名投递，按优先级挑一个投：
