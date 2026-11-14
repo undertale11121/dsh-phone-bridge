@@ -437,12 +437,8 @@ async function wakeTick(agents) {
   const config = readConfig()
   const wake = readWake(config)
   const state = readWakeState()
-  // 目标一个都不写死：先看卡片里指定的那个还在不在，不在就投给现在开着的会话。
-  const pinned = wake.sessionId || readActive()?.sessionId || ''
-  const live = listLiveSessions(agents)
-  const pinnedLive = pinned && live.some((row) => row.id === pinned)
-  const target = pinnedLive ? pinned : live[0]?.id || ''
   if (!wake.enabled || !config.token) return
+
   let data
   try {
     data = await threadSince(config, state.cursor)
@@ -454,34 +450,51 @@ async function wakeTick(agents) {
     }
     return
   }
+
   const incoming = (data.messages || []).filter(
     (item) => item && item.from !== 'desktop' && (item.to === 'desktop' || String(item.to || '').startsWith('desktop:')),
   )
-  state.cursor = Number(data.next || state.cursor)
+  if (!incoming.length) {
+    // 没有新消息也要把 lastError 收干净，别让一条旧报错一直挂着。
+    if (state.lastError) {
+      state.lastError = ''
+      writeWakeState(state)
+    }
+    return
+  }
+
+  // agents.get() 只认「当前引擎进程里的活 agent」（dsh-agent: "Look up a live agent"），
+  // 而会话 id 可能来自卡片填写、active.json 或文件名推断——大概率拿不到。
+  // 所以不点名投递，按优先级挑一个投：
+  //   ① 卡片指定且还活着的会话  ② 最近有活动的活会话  ③ 一个都没有就等
+  const live = listLiveSessions(agents)
+  const pinned = wake.sessionId || readActive()?.sessionId || ''
+  const pickByPinned = pinned ? live.find((row) => row.id === pinned) : null
+
   for (const item of incoming) {
-    // 收件人写了名字（desktop:登录页）就投给那个会话，否则投给最近用过互联的会话
     const named = String(item.to || '').startsWith('desktop:') ? String(item.to).slice('desktop:'.length) : ''
-    let sessionId = target
+    let sessionId = pickByPinned?.id || live[0]?.id || ''
     if (named) {
       const row = resolveNamed(named)
-      if (!row) {
-        state.lastError = `找不到会话「${named}」，消息留在工作台上`
-        continue
+      if (row) sessionId = row.id
+      else {
+        // 名字找不到就退回到「开着的那个」，消息不能丢
+        sessionId = pickByPinned?.id || live[0]?.id || ''
       }
-      sessionId = row.id
     }
     if (!sessionId) {
-      state.lastError = live.length
-        ? '手里没有可投的会话 id（拿到了会话但读不出 id），先看看卡片里的「本次唤醒目标」'
-        : 'DSH 里现在没有打开的会话：先把要唤醒的对话切到前台，手机发的话会投给它'
+      // 一个会话都没开着：**cursor 不前进**，下次再试；消息留在工作台上不丢。
+      state.lastError = 'DSH 里现在没有开着的会话，这条消息留在工作台等你打开对话'
       continue
     }
     const text = `【来自${item.from === 'phone' ? '手机模型' : item.from}的消息】\n${item.text}`
     try {
       state.lastWake = await wakeSession(agents, sessionId, text, wake.mode)
       state.lastError = ''
+      state.cursor = Number(data.next || state.cursor)
     } catch (error) {
       state.lastError = String(error?.message || error)
+      break
     }
   }
   writeWakeState(state)
@@ -518,7 +531,10 @@ export function listLiveSessions(agents) {
     if (typeof value === 'object') for (const [id, item] of Object.entries(value)) push(id, item)
   }
   try {
-    for (const key of ['list', 'array', 'all', 'values', 'entries', 'sessions']) {
+    // roots() 只返回顶层 agent（entry.owner === undefined），子 agent 被过滤掉；
+    // list() 会吐出 mnemon 之类跑在子 agent 里的会话，拿它当投递目标等于丢进黑洞。
+    // 所以 roots 优先，退化才用 list，最后再按 id 前缀兜底一次。
+    for (const key of ['roots', 'list', 'array', 'all', 'values', 'entries', 'sessions']) {
       if (typeof handle?.[key] !== 'function') continue
       try {
         const value = handle[key]()
@@ -527,7 +543,8 @@ export function listLiveSessions(agents) {
       } catch {}
     }
   } catch {}
-  return rows.sort((a, b) => b.at - a.at)
+  const real = rows.filter((row) => !/^mnemon-run-/.test(row.id))
+  return (real.length ? real : rows).sort((a, b) => b.at - a.at)
 }
 
 function bindLiveTarget(agents) {
