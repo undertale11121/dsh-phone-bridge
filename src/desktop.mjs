@@ -828,6 +828,25 @@ class DesktopBridge {
   // What the phone may ask this computer to do. Same vocabulary as bridge.call()
   // in the other direction, so neither side is "the tool" of the other.
   async handleCall(op, args) {
+    // 手机端是 Flutter 原生界面，会话头部的 web 插槽在那边渲染不出来，
+    // 所以手机面板上的开关走这条 MCP 通道，真源仍写在电脑的 desktop.json.links。
+    if (op === 'link') {
+      const store = readJson(desktopConfigPath(), {})
+      const links = store?.links && typeof store.links === 'object' ? store.links : {}
+      const desktopId = String(args?.desktopId || '').trim()
+      const phoneId = String(args?.phoneId || '').trim()
+      if (!desktopId) throw new Error('要指定电脑上哪个会话（desktopId）')
+      if (args?.off) delete links[desktopId]
+      else links[desktopId] = { phoneId, at: new Date().toISOString() }
+      store.links = links
+      writeJson(desktopConfigPath(), store)
+      return { text: args?.off ? '已断开这个会话的互联' : '已把这个会话和手机连起来', links }
+    }
+    if (op === 'links') {
+      const store = readJson(desktopConfigPath(), {})
+      const links = store?.links && typeof store.links === 'object' ? store.links : {}
+      return { text: Object.keys(links).length ? JSON.stringify(links) : '现在没有任何会话开着互联', links }
+    }
     if (op === 'agent.spawn') {
       return { agent: await this.spawnAgent({ name: args?.name, task: args?.task, host: 'desktop' }) }
     }
