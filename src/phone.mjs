@@ -67,6 +67,12 @@ function safeSize(file) {
 }
 
 
+// dsh-go 把「relay 连接还开着」当成一轮手机操控仍在进行，于是那个「看桌面」
+// 悬浮条一直挂在桌面上。空闲这么久就把连接断掉，让那一轮正常收尾。
+const RELAY_IDLE_MS = Number(process.env.PHONE_BRIDGE_RELAY_IDLE_MS || 15_000)
+// 「（手机已连上电脑）」提醒的冷却时间。
+const ANNOUNCE_COOLDOWN_MS = Number(process.env.PHONE_BRIDGE_ANNOUNCE_MS || 30 * 60_000)
+
 // Per-tool timeouts: some phone tools are allowed to block for a long time.
 const TOOL_TIMEOUTS = {
   handoff: 11 * 60_000,
@@ -140,6 +146,7 @@ export class PhoneBridge {
     this.running = false
     this.relay = null
     this.relayBusy = Promise.resolve()
+    this.relayIdle = null
     this.authFailed = false
     this.connected = false
     this.desktop = null
@@ -214,8 +221,12 @@ export class PhoneBridge {
 
   stop() {
     this.running = false
+    if (this.relayIdle) {
+      clearTimeout(this.relayIdle)
+      this.relayIdle = null
+    }
     try {
-      this.relay?.kill()
+      this.relay?.stop()
     } catch {
       /* ignore */
     }
@@ -254,12 +265,7 @@ export class PhoneBridge {
         this.connected = true
         this.desktop = { ...(hello?.desktop || {}), paired: Boolean(hello?.paired) }
         backoff = 1000
-        if (!this.announced) {
-          this.announced = true
-          try {
-            await this.say('（手机已连上电脑）')
-          } catch {}
-        }
+        await this.announceOnce('（手机已连上电脑）')
         log(
           `已连接桌面：${this.desktop?.name || '?'}（${this.desktop?.platform || '?'}）${
             hello?.paired ? '· 设备已记住' : ''
@@ -285,6 +291,25 @@ export class PhoneBridge {
 
   deviceName() {
     return os.hostname() || 'phone'
+  }
+
+  // 「（手机已连上电脑）」以前是实例内存里的布尔量：进程一重启就重置，watchdog
+  // 每次拉起都往工作台刷一条，用户看到的就是「一直重连」。改成落盘冷却，
+  // 半个小时内只提醒一次（真的断了很久再连上仍会有提示）。
+  async announceOnce(text) {
+    const file = path.join(bridgeDir(), 'announce.json')
+    const last = Number(readJson(file, {})?.at || 0)
+    if (Date.now() - last < ANNOUNCE_COOLDOWN_MS) return
+    try {
+      writeJson(file, { at: Date.now(), text })
+    } catch {
+      /* 冷却文件写不进去也不能挡住连接 */
+    }
+    try {
+      await this.say(text)
+    } catch {
+      /* ignore */
+    }
   }
 
   describeDevice() {
@@ -452,27 +477,55 @@ export class PhoneBridge {
       return await fn()
     } finally {
       release()
+      // 所有用到 relay 的路径（包括启动时的 tools/list）都要把空闲计时器续上，
+      // 否则那条连接会一直挂着，dsh-go 的悬浮条就收不掉。
+      this.scheduleRelayIdle()
     }
   }
 
   async listTools() {
-    const relay = await this.ensureRelay()
-    const tools = await relay.listTools(60_000)
-    return tools.map((tool) => ({
-      name: tool.name,
-      description: tool.description || '',
-      inputSchema: tool.inputSchema || null,
-    }))
+    try {
+      const relay = await this.ensureRelay()
+      const tools = await relay.listTools(60_000)
+      return tools.map((tool) => ({
+        name: tool.name,
+        description: tool.description || '',
+        inputSchema: tool.inputSchema || null,
+      }))
+    } finally {
+      this.scheduleRelayIdle()
+    }
   }
 
   async callTool(name, args) {
     if (!name) throw new Error('缺少工具名')
     const timeout = TOOL_TIMEOUTS[name] || 120_000
-    return await this.withRelay(async () => {
-      const relay = await this.ensureRelay()
-      const result = await relay.callTool(name, args || {}, timeout)
-      return readToolResult(result)
-    })
+    try {
+      return await this.withRelay(async () => {
+        const relay = await this.ensureRelay()
+        const result = await relay.callTool(name, args || {}, timeout)
+        return readToolResult(result)
+      })
+    } finally {
+      this.scheduleRelayIdle()
+    }
+  }
+
+  // 一轮操控做完后起个计时器，空闲 RELAY_IDLE_MS 就断开 relay，让 dsh-go 那边
+  // 判定这一轮结束、把悬浮条收掉。连续调用（screen → tap → tap）不会被拆断。
+  scheduleRelayIdle() {
+    if (this.relayIdle) clearTimeout(this.relayIdle)
+    this.relayIdle = setTimeout(() => {
+      this.relayIdle = null
+      const relay = this.relay
+      this.relay = null
+      try {
+        relay?.stop()
+      } catch {
+        /* ignore */
+      }
+    }, RELAY_IDLE_MS)
+    this.relayIdle.unref?.()
   }
 
   async shell(args) {
@@ -1572,7 +1625,26 @@ function handlerAliases(handlers) {
   }
 }
 
+// 手机端只允许一个桥接实例：pid 文件 + 存活检查，进程没了自动接管。
+function takeInstanceLock() {
+  try {
+    const file = path.join(bridgeDir(), 'bridge.pid')
+    const held = Number(readJson(file, {})?.pid || 0)
+    if (held && held !== process.pid && alive(held)) return false
+    writeJson(file, { pid: process.pid, at: Date.now() })
+    return true
+  } catch {
+    return true
+  }
+}
+
 export async function runPhoneMcp({ withMcp = true } = {}) {
+  // watchdog 可能同时拉起多个「auto」实例：多个进程一起长轮询，工作台里就会
+  // 重复出现「（手机已连上电脑）」、同一条消息被投两次。只留一个。
+  if (!takeInstanceLock()) {
+    log('已经有一个桥接实例在跑，这个进程直接退出（避免重复连接）')
+    return
+  }
   const bridge = new PhoneBridge(loadPhoneConfig())
   const setupPort = Number(process.env.PHONE_BRIDGE_SETUP_PORT || '8789')
   const handlers = {

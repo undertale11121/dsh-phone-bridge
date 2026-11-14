@@ -1,13 +1,22 @@
 {
   "agents": [
     {
+      "id": "psess:session-c86c94cf-6f73-4b51-9e03-6a5a948d93e5",
+      "name": "workspace",
+      "host": "phone",
+      "kind": "session",
+      "note": "手机上开着的会话 · /root/workspace",
+      "running": true,
+      "at": "2026-11-14T13:24:22.898Z"
+    },
+    {
       "id": "psess:session-0a425ca8-4475-4511-bdd4-bca092a30f20",
       "name": "workspace",
       "host": "phone",
       "kind": "session",
       "note": "手机上开着的会话 · /root/workspace",
       "running": true,
-      "at": "2026-11-14T13:14:46.543Z"
+      "at": "2026-11-14T13:30:02.502Z"
     }
   ]
 }
