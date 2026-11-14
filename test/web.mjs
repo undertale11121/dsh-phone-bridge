@@ -241,13 +241,34 @@ const patched = host.installEngineRow()
 check('补进了引擎行', patched.length === 1 && path.resolve(patched[0]) === path.resolve(patchFile), JSON.stringify(patched))
 const afterPatch = fs.readFileSync(patchFile, 'utf8')
 check('引擎行是 mcp-client + stdio', /id: dsh-phone-bridge-engine\s*$/m.test(afterPatch) && /name: '@deepseek-ai\/dsh-mcp-client'/.test(afterPatch) && /serverName: phone-bridge/.test(afterPatch) && /transport: stdio/.test(afterPatch), afterPatch)
-check('args 指向真实 bridge.mjs', afterPatch.includes(host.enginePath()), afterPatch)
+const yamlDecoded = (row) => {
+  try {
+    return JSON.parse(`"${row.replace(/^"/, '').replace(/"$/, '')}"`)
+  } catch {
+    return null
+  }
+}
+const argsLine = (afterPatch.match(/^\s+- "(.+)"$/m) || [])[1] || ''
+check('args 指向真实 bridge.mjs', yamlDecoded(argsLine) === host.enginePath() && /\\[^\\]/.test(argsLine), `${argsLine} => ${yamlDecoded(argsLine)}`)
 check('不动用户原有内容', afterPatch.includes('id: phone-bridge-web') && afterPatch.includes('用户自己的补丁'))
 const again = host.installEngineRow()
 check('重复加载不重复写', again.length === 0 && fs.readFileSync(patchFile, 'utf8') === afterPatch)
+// 回归 1：Windows 路径在 YAML 双引号里必须转义反斜杠，否则 eval 时 \U \. 会把路径吃掉
+check('路径写成可解析的 YAML（反斜杠已转义）', yamlDecoded(argsLine) === host.enginePath(), argsLine)
+// 回归 2：老版本把引擎行无脑追加到文件末尾，掉进别的条目中间会把整份补丁写坏
+fs.writeFileSync(path.join(profileDir, 'package.json'), JSON.stringify({ dsh: { profile: { bundles: ['dsh-phone-bridge'] } } }))
+fs.writeFileSync(patchFile, '# 用户自己的补丁\n- insert:\n    - id: some-other-plugin\n      name: some-other-plugin\n      config:\n        a: 1\n')
+host.installEngineRow()
+const atHead = fs.readFileSync(patchFile, 'utf8')
+check('引擎行插在开头而不是文件末尾', atHead.trimStart().startsWith('# >>> phone-bridge engine row') && atHead.trimEnd().endsWith('        a: 1'), atHead)
+host.installEngineRow()
+check('已有引擎行的文件不会被再动一次', fs.readFileSync(patchFile, 'utf8') === atHead)
 fs.writeFileSync(path.join(profileDir, 'package.json'), JSON.stringify({ dsh: { profile: { bundles: ['dsh-phone-bridge-web'] } } }))
 fs.writeFileSync(patchFile, '# 空补丁\n')
 check('只靠 bundles 列表也认得', host.installEngineRow().length === 1)
+fs.writeFileSync(path.join(profileDir, 'package.json'), JSON.stringify({ dsh: { profile: { bundles: ['dsh-phone-bridge'] } } }))
+fs.writeFileSync(patchFile, '# 空补丁\n')
+check('新包名也认得', host.installEngineRow().length === 1)
 process.env.PHONE_BRIDGE_NO_AUTOPATCH = '1'
 fs.writeFileSync(patchFile, '# 空补丁\n')
 check('环境变量能关掉自注册', host.installEngineRow().length === 0)

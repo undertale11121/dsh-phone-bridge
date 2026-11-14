@@ -512,6 +512,7 @@ function installWake(ctx) {
 
 const ENGINE_ENTRY_ID = 'dsh-phone-bridge-engine'
 const ENGINE_CLIENT = '@deepseek-ai/dsh-mcp-client'
+const ENGINE_BUNDLE = 'dsh-phone-bridge'
 const AUTOPATCH_ENV = 'PHONE_BRIDGE_NO_AUTOPATCH'
 
 /** bridge.mjs 在哪：npm 装到包根、bundle 自带、或旧版 ~/.dsh/phone-bridge/。 */
@@ -532,12 +533,21 @@ export function enginePath() {
   return null
 }
 
-function enginePatch(engine) {
-  const quoted = `'${engine.replace(/'/g, "''")}'`
+/** YAML 双引号标量：反斜杠必须再转义一次，否则 Windows 路径会被当成转义序列吃掉。 */
+function yamlDoubleQuoted(text) {
+  return `"${String(text).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+}
+
+// 自注册段的开头/结尾锚点。没有锚点就插在文件最前面：绝对不能再无脑追加到末尾
+// （第一次实现就是这么干的，结果掉在另一个插件的中途，整份补丁坏掉）。
+const AUTO_BEGIN = '# >>> phone-bridge engine row (auto-added, edit the row or set PHONE_BRIDGE_NO_AUTOPATCH=1) >>>'
+const AUTO_END = '# <<< phone-bridge engine row <<<'
+
+export function enginePatch(engine) {
   return [
-    '',
-    '# ↓ 互联（phone-bridge）的引擎半：bridge.mjs 以 stdio 挂给 mcp-client。',
-    '#   这一行由 web/index.js 首次加载时自动追加；删掉它，桥接工具就没了。',
+    AUTO_BEGIN,
+    '# 互联（phone-bridge）的引擎半：bridge.mjs 以 stdio 挂给 mcp-client。',
+    '# 由 web/index.js 首次加载时自动追加；删掉它，桥接工具就没了。',
     '- insert:',
     `    - id: ${ENGINE_ENTRY_ID}`,
     `      name: '${ENGINE_CLIENT}'`,
@@ -546,21 +556,34 @@ function enginePatch(engine) {
     '        transport: stdio',
     '        command: !!js process.execPath',
     '        args:',
-    `          - ${quoted}`,
+    `          - ${yamlDoubleQuoted(engine)}`,
     '          - auto',
     '        toolCallTimeoutMs: 1800000',
     '        failOnStartupError: false',
     '        # 让桥接知道是哪个会话在调用它（自动唤醒要用）',
     '        dshGoPhoneCaller: true',
+    AUTO_END,
     '',
   ].join('\n')
+}
+
+/** 把自注册段放进补丁：有锚点就原地替换，没有就插在最前面。 */
+export function withEngineRow(patch, engine) {
+  const block = enginePatch(engine)
+  const begin = patch.indexOf(AUTO_BEGIN)
+  if (begin >= 0) {
+    const end = patch.indexOf(AUTO_END, begin)
+    const stop = end >= 0 ? end + AUTO_END.length : patch.length
+    return `${patch.slice(0, begin)}${block.trimEnd()}${patch.slice(stop).replace(/^\n*/, '\n')}`
+  }
+  return `${block}\n${patch.replace(/^\uFEFF/, '')}`
 }
 
 // 认的是 serverName，不是 id：bundle 自身的行也叫 dsh-phone-bridge，光看 id 会
 // 把它误当成引擎行而永远不补。
 const ENGINE_ROW = /serverName:\s*['"]?phone-bridge['"]?\s*$/m
 
-/** 哪些 profile 装了本 bundle：bundles 列表里有它，或补丁里提到了它。 */
+/** 哪些 profile 装了本 bundle：bundles 列表里有本包名，或补丁里提到了它。 */
 function profilesWithThisBundle() {
   const found = []
   const root = path.join(dshHome(), 'profiles')
@@ -581,8 +604,9 @@ function profilesWithThisBundle() {
     } catch {
       continue
     }
-    const listed = Array.isArray(bundles) && bundles.includes('dsh-phone-bridge-web')
-    if (listed || /dsh-phone-bridge-web/.test(patch)) found.push({ patchFile, patch })
+    const listed = Array.isArray(bundles) && (bundles.includes(ENGINE_BUNDLE) || bundles.includes('dsh-phone-bridge-web'))
+    const mentioned = /dsh-phone-bridge(-web)?\b/.test(patch)
+    if (listed || mentioned) found.push({ patchFile, patch })
   }
   return found
 }
@@ -599,7 +623,7 @@ export function installEngineRow() {
       try {
         fs.copyFileSync(profile.patchFile, `${profile.patchFile}.bak-autopatch`)
       } catch {}
-      const next = `${profile.patch.replace(/\s*$/, '')}\n${enginePatch(engine)}`
+      const next = withEngineRow(profile.patch, engine)
       const temp = `${profile.patchFile}.${process.pid}.tmp`
       fs.writeFileSync(temp, next)
       fs.renameSync(temp, profile.patchFile)
