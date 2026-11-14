@@ -885,10 +885,10 @@ function __buildPhoneBridge(require) {
         // 侧栏面板会把它显示出来（看不见按钮时直接看面板就知道卡在哪）。
         var TRIES = window.__PB_SLOT_TRIES__ || (window.__PB_SLOT_TRIES__ = [])
         var Switch = LinkSwitch(React, pack)
+        // 诊断时三个都挂过：确认第三方包能注册会话插槽，但也因此一次冒出三个按钮。
+        // 收敛成一个 —— 会话顶部工具栏那颗。
         var candidates = [
           { name: 'conversation.session.header.actions', order: 40 },
-          { name: 'conversation.session.header.utilities', order: 40 },
-          { name: 'conversation.input.dock', order: 40 },
         ]
         candidates.forEach(function (candidate) {
           try {
