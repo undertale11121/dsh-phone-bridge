@@ -69,6 +69,8 @@ function __buildPhoneBridge(require) {
         stopped: '已停止',
         none: '还没有手机登记过',
         failed: '读取失败',
+        loading: '正在读取桥接状态…',
+        retry: '重试',
         wake: '自动唤醒',
         wakeHint: '手机往电脑发消息时，自动把消息投进电脑上最近用互联的那个会话，让睡着的模型接着干。开着才会花 token。',
         wakeTarget: '目标会话（自动）',
@@ -146,6 +148,8 @@ function __buildPhoneBridge(require) {
         stopped: 'stopped',
         none: 'No phone registered yet',
         failed: 'Failed to read',
+        loading: 'Reading bridge state…',
+        retry: 'Retry',
         phoneNote: 'This machine is the phone side: pair it from the “Phone bridge” capsule in the app. This card is read-only here.',
         collab: 'Two sessions, straight through',
         collabHint: 'Once picked, a message is delivered into the session open on the other side instead of waiting on the workbench — both models can just talk.',
@@ -376,6 +380,14 @@ function __buildPhoneBridge(require) {
 
         if (error) {
           children.push(h('div', { key: 'err', style: Object.assign({}, muted, { color: 'var(--dsw-alias-accent-red, #f28b82)', padding: '6px 0' }) }, error))
+        }
+        // 第一次 fetch 还没回来时 state 是 null。以前这里什么都不渲染，用户只看到
+        // 一个空面板，以为坏了。给一句「正在读取」+ 重试按钮，至少知道在等什么。
+        if (!state) {
+          children.push(h('div', { key: 'loading', style: Object.assign({}, muted, { padding: '12px 0 4px', fontSize: 13 }) },
+            h('span', null, error || t.loading),
+            h('button', { type: 'button', style: Object.assign({}, button, { marginLeft: 10 }), onClick: load }, t.retry),
+          ))
         }
 
         // 面板上东西多，先给一条三步上手，省得用户不知道从哪开始。

@@ -2263,7 +2263,7 @@ export function gateMessage(name, links, current) {
   if (!/^(peer_|phone_|agent_|session_)/.test(tool)) return ''
   const opened = current ? Boolean(links?.[current]) : Object.keys(links || {}).length > 0
   if (opened) return ''
-  const who = current ? `${String(current).replace(/^session-/, '').slice(0, 8)} ` : ''
+  const who = current ? String(current).replace(/^session-/, '').slice(0, 8) : ''
   return `这个会话（${who}）没开互联，互联工具现在不可用。在会话顶部点「🔗 互联」打开，开了之后这些工具立刻能用。`
 }
 
