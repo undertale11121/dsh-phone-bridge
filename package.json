@@ -46,7 +46,7 @@
     "README.md"
   ],
   "scripts": {
-    "test": "node test/web.mjs && node test/render.mjs && node test/rotate.mjs",
+    "test": "node test/web.mjs && node test/render.mjs && node test/rotate.mjs && node test/links.mjs",
     "test:all": "node test/web.mjs && node test/rotate.mjs && node test/render.mjs && node test/auto.mjs && node test/pair.mjs && node test/qr.mjs",
     "test:pair": "node test/pair.mjs",
     "doctor": "node bridge.mjs doctor",
