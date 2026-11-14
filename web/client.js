@@ -465,8 +465,10 @@ function __buildPhoneBridge(require) {
         if (!onPhone && state) {
           var collab = state.collab || {}
           var live = state.allSessions || state.live || []
+          // 手机会话上报的 id 一律是 psess:<session-id>，host 为 phone。
+          // 别按 kind 筛——readAgents 会把 kind 归成 subagent/model，'session' 不会出现。
           var phoneRows = (state.agents || []).filter(function (item) {
-            return item && item.kind === 'session' && item.host === 'phone'
+            return item && item.host === 'phone' && String(item.id || '').indexOf('psess:') === 0
           })
           var pickCollab = function (patch) {
             var next = {
