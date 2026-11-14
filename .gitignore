@@ -35,3 +35,9 @@ active.json
 .announce.json
 links.json
 consumed.json
+registry.json
+announce.json
+bridge.pid
+inbox-state.json
+wake-state.json
+test/home/
