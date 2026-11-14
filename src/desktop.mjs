@@ -507,6 +507,19 @@ class DesktopBridge {
       }
       return sendJson(res, 405, { ok: false })
     }
+    // 协作对：手机侧的收件器要知道「投给哪个手机会话」。
+    // 配置由桌面插件写进 desktop.json，这里只读文件，不做缓存，改完立刻生效。
+    if (route === '/collab') {
+      if (req.method === 'GET') {
+        const auth = this.parseAuth(req, url)
+        const ok =
+          auth.k === 'token' ? tokenEqual(auth.token, this.config.token) : this.verifyDevice(`${auth.id}:${auth.ts}`, auth.sig, auth.id)
+        if (!ok) return sendJson(res, 401, { ok: false })
+        const stored = readJson(desktopConfigPath(), {})
+        return sendJson(res, 200, { ok: true, collab: stored?.collab || null })
+      }
+      return sendJson(res, 405, { ok: false })
+    }
     if (route === '/thread') {
       if (req.method === 'GET') {
         const auth = this.parseAuth(req, url)

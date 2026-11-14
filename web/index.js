@@ -261,6 +261,10 @@ async function snapshot() {
     },
     // 会话目录：模型可以按用途挑唤醒对象（peer_say 的 to 写 desktop:<名字>）
     registry: sessionRows(),
+    // 引擎里正开着的会话（内存态，重启就没了）。排查「为什么没投出去」时看这个。
+    live: listLiveSessions(),
+    // 协作对：电脑会话 × 手机会话，面板上两排下拉读写它。
+    collab: readCollab(config),
     agents: readAgents(),
     log: readLogTail(8),
     configPath: configPath(),
@@ -330,6 +334,25 @@ async function runAction(body) {
     const auto = wake.sessionId || readActive()?.sessionId || ''
     return { text: `唤醒：${wake.enabled ? '开' : '关'}${auto ? `，会话 ${auto.slice(0, 8)}…` : '，还没记录到会话'}` }
   }
+  if (body.action === 'collab') {
+    const collab = readCollab(config)
+    if (typeof body.desktopSessionId === 'string') collab.desktopSessionId = body.desktopSessionId.trim()
+    if (typeof body.phoneSessionId === 'string') collab.phoneSessionId = body.phoneSessionId.trim()
+    if (typeof body.phoneName === 'string') collab.phoneName = body.phoneName.trim()
+    config.collab = collab
+    // 钉了电脑会话就等于告诉唤醒器「投给它」，不用再让用户去另一个开关里填一遍。
+    if (collab.desktopSessionId) {
+      const wake = readWake(config)
+      wake.sessionId = collab.desktopSessionId
+      wake.enabled = true
+      config.wake = wake
+    }
+    writeJson(configPath(), config)
+    const parts = []
+    parts.push(collab.desktopSessionId ? `电脑会话 ${collab.desktopSessionId.slice(0, 8)}…` : '电脑会话未选')
+    parts.push(collab.phoneSessionId ? `手机会话 ${(collab.phoneName || collab.phoneSessionId).slice(0, 16)}` : '手机会话未选')
+    return { text: `协作对已保存：${parts.join(' · ')}` }
+  }
   if (body.action === 'start') {
     const info = await ensureServer(config)
     return { text: `后台服务在跑：pid ${info.pid}，端口 ${info.port}` }
@@ -338,6 +361,14 @@ async function runAction(body) {
 }
 
 const WAKE_DEFAULTS = { enabled: false, sessionId: '', mode: 'queue' }
+
+// 协作对：用户在这里点名「电脑的哪个会话」×「手机的哪个会话」。
+// 两边都钉死之后，消息就不再是丢在工作台上等人来取，而是直接投进对方会话。
+const COLLAB_DEFAULTS = { desktopSessionId: '', phoneSessionId: '', phoneName: '' }
+
+function readCollab(config) {
+  return { ...COLLAB_DEFAULTS, ...((config || readConfig()).collab || {}) }
+}
 
 let agentsRef = null
 
@@ -486,7 +517,9 @@ async function wakeTick(agents) {
   // 所以不点名投递，按优先级挑一个投：
   //   ① 卡片指定且还活着的会话  ② 最近有活动的活会话  ③ 一个都没有就等
   const live = listLiveSessions(agents)
-  const pinned = wake.sessionId || readActive()?.sessionId || ''
+  const collab = readCollab(config)
+  // 面板上钉的协作对优先级最高；没钉才退回到卡片里的 sessionId / 最近用过的那个。
+  const pinned = collab.desktopSessionId || wake.sessionId || readActive()?.sessionId || ''
   const pickByPinned = pinned ? live.find((row) => row.id === pinned) : null
 
   for (const item of incoming) {
@@ -531,11 +564,13 @@ export function listLiveSessions(agents) {
   const rows = []
   const push = (id, item) => {
     if (!id) return
+    // agent 对象上没有扁平 cwd，真正的目录挂在 session.header.cwd 上
+    const header = item?.session?.header || item?.header || {}
     rows.push({
       id: String(id),
       at: Number(item?.at || item?.updatedAt || item?.lastActivity || 0) || 0,
-      cwd: String(item?.cwd || item?.header?.cwd || ''),
-      title: String(item?.title || item?.name || ''),
+      cwd: String(item?.cwd || header.cwd || ''),
+      title: String(item?.title || header.title || ''),
     })
   }
   const feed = (value) => {
@@ -615,6 +650,151 @@ function installWake(ctx) {
       else start()
     } catch (error) {
       console.error(`[phone-bridge] wake poller skipped: ${error}`)
+    }
+  })
+}
+
+// ── 手机侧收件器：电脑模型 → 手机会话 ────────────────────────────────────────
+// installWake 负责「手机说的话投进电脑会话」，这一段是它的对称另一半。
+// 手机上才有 phone.json（配对时就写在那里），桌面自然不启用，所以两端可以
+// 塞同一份代码。
+const phoneConfigPath = () => path.join(bridgeDir(), 'phone.json')
+const inboxStatePath = () => path.join(bridgeDir(), 'inbox-state.json')
+
+const phoneAuth = (token) => Buffer.from(JSON.stringify({ k: 'token', token })).toString('base64url')
+
+async function bridgeGet(base, pathname, token, timeoutMs = 8000) {
+  const sep = pathname.includes('?') ? '&' : '?'
+  const res = await fetch(`${base}${pathname}${sep}auth=${phoneAuth(token)}`, { signal: AbortSignal.timeout(timeoutMs) })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return await res.json()
+}
+
+async function bridgePost(base, pathname, token, payload, timeoutMs = 8000) {
+  const res = await fetch(`${base}${pathname}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ auth: { k: 'token', token }, ...payload }),
+    signal: AbortSignal.timeout(timeoutMs),
+  })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return await res.json()
+}
+
+// 把手机上开着的会话报给电脑：面板的两排下拉和 peer_sessions 都靠这份名单。
+async function reportPhoneSessions(agents, base, token) {
+  for (const row of listLiveSessions(agents).slice(0, 12)) {
+    try {
+      await bridgePost(
+        base,
+        '/agents/register',
+        token,
+        {
+          agent: {
+            id: `psess:${row.id}`,
+            name: row.title || path.basename(row.cwd || '') || row.id.slice(0, 8),
+            host: 'phone',
+            kind: 'session',
+            note: `手机上开着的会话 · ${row.cwd || '目录未知'}`,
+            running: true,
+            at: new Date().toISOString(),
+          },
+        },
+        5000,
+      )
+    } catch {
+      return // 电脑不在线就先不报，下一轮再说
+    }
+  }
+}
+
+async function inboxTick(agents, lastReport) {
+  const config = readJson(phoneConfigPath(), null)
+  if (!config?.url || !config?.token) return lastReport
+  const base = String(config.url).replace(/\/+$/, '')
+  const state = readJson(inboxStatePath(), { cursor: 0, lastError: '' })
+
+  let data
+  try {
+    data = await bridgeGet(base, `/thread?since=${Number(state.cursor) || 0}&as=phone&limit=50`, config.token)
+  } catch (error) {
+    const message = String(error?.message || error)
+    if (message !== state.lastError) {
+      state.lastError = message
+      writeJson(inboxStatePath(), state)
+    }
+    return lastReport
+  }
+
+  let collab = null
+  try {
+    collab = (await bridgeGet(base, '/collab', config.token, 5000))?.collab || null
+  } catch {}
+  const pinned = String(collab?.phoneSessionId || '')
+
+  const incoming = (data?.messages || []).filter((item) => {
+    if (!item || item.from === 'phone') return false
+    const to = String(item.to || '')
+    return to === 'phone' || (pinned && to === `phone:${pinned}`)
+  })
+
+  if (incoming.length) {
+    const live = listLiveSessions(agents)
+    const target = (pinned && live.find((row) => row.id === pinned)) || live[0] || null
+    if (!target) {
+      // 和桌面侧一个规矩：没会话就**不动 cursor**，消息留着，绝不吞。
+      state.lastError = `手机上现在没有开着的会话，${incoming.length} 条消息留在工作台`
+      writeJson(inboxStatePath(), state)
+      return lastReport
+    }
+    for (const item of incoming) {
+      try {
+        state.lastWake = await wakeSession(agents, target.id, `【来自电脑模型的消息】\n${item.text}`, 'queue')
+        state.lastError = ''
+        state.cursor = Number(data?.next || state.cursor)
+      } catch (error) {
+        state.lastError = String(error?.message || error)
+        break
+      }
+    }
+    writeJson(inboxStatePath(), state)
+  }
+
+  const now = Date.now()
+  if (now - (Number(lastReport) || 0) > 30_000) {
+    await reportPhoneSessions(agents, base, config.token)
+    return now
+  }
+  return lastReport
+}
+
+function installInbox(ctx) {
+  if (!isPhone()) return
+  if (typeof ctx.inject !== 'function') return
+  ctx.inject(['agents'], (scope) => {
+    let busy = false
+    let lastReport = 0
+    const start = () => {
+      const timer = setInterval(() => {
+        if (busy) return
+        busy = true
+        inboxTick(scope.agents, lastReport)
+          .then((next) => {
+            lastReport = next
+          })
+          .catch(() => {})
+          .finally(() => {
+            busy = false
+          })
+      }, 3000)
+      timer.unref?.()
+      return () => clearInterval(timer)
+    }
+    try {
+      if (typeof scope.effect === 'function') scope.effect(start, 'phone-bridge: inbox poller')
+      else start()
+    } catch (error) {
+      console.error(`[phone-bridge] inbox poller skipped: ${error}`)
     }
   })
 }
@@ -814,6 +994,13 @@ export function apply(ctx) {
     },
   }
   installWake(ctx)
+  // 手机侧的反方向：把电脑模型发的话直接投进手机上的会话。
+  // 两端共用这一份代码，靠 isPhone() 分工，谁也不抢谁的活。
+  try {
+    installInbox(ctx)
+  } catch (error) {
+    console.error(`[phone-bridge] 收件器跳过: ${error}`)
+  }
   try {
     installEngineRow()
   } catch (error) {
