@@ -1,0 +1,20 @@
+# dsh-phone-bridge: workbench tools for headless agents (桌面二测).
+- insert:
+    - id: dsh-phone-thread
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: phone-thread
+        transport: stdio
+        command: !!js process.execPath
+        args:
+          - "C:\\Users\\17735\\.dsh\\phone-bridge\\src\\thread-mcp.mjs"
+          - "--agent"
+          - "桌面二测"
+          - "--name"
+          - "桌面二测"
+          - "--mode"
+          - "direct"
+          - "--setup"
+          - "http://127.0.0.1:8789"
+        toolCallTimeoutMs: 660000
+        failOnStartupError: false

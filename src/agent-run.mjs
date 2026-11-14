@@ -77,7 +77,11 @@ async function main() {
   if (fs.existsSync(modelPatch)) cliArgs.push('--patch', modelPatch)
   cliArgs.push('--json', prompt)
 
-  const child = spawn(process.env.DSH_BIN || 'dsh', cliArgs, {
+  const bin = process.env.DSH_BIN || 'dsh'
+  // Windows 上 spawn 一个 .cmd 会 EINVAL（Node 的安全限制），所以桌面端把 dsh
+  // 包装成 bin/dsh.mjs，这里识别出脚本就用当前 node 去跑它。
+  const asScript = /\.(mjs|cjs|js)$/i.test(bin)
+  const child = spawn(asScript ? process.execPath : bin, asScript ? [bin, ...cliArgs] : cliArgs, {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, PHONE_BRIDGE_AGENT: ID, PHONE_BRIDGE_AGENT_NAME: NAME },
   })

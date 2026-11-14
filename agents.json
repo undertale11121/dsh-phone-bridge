@@ -30,13 +30,42 @@
       "createdAt": "2026-11-14T13:37:23.361Z"
     },
     {
+      "id": "psess:session-470e2263-01ab-43de-bb4a-bffd66f242ab",
+      "name": "root",
+      "host": "phone",
+      "kind": "session",
+      "note": "手机上开着的会话 · /root",
+      "running": true,
+      "at": "2026-11-14T13:38:19.227Z"
+    },
+    {
+      "id": "桌面子测",
+      "name": "桌面子测",
+      "host": "desktop",
+      "kind": "subagent",
+      "task": "只做一件事：回答「2+3 等于几」，一句话，然后结束。",
+      "pid": 31752,
+      "log": "C:\\Users\\17735\\.dsh\\phone-bridge\\agents\\桌面子测.log",
+      "createdAt": "2026-11-14T13:40:10.751Z"
+    },
+    {
+      "id": "桌面二测",
+      "name": "桌面二测",
+      "host": "desktop",
+      "kind": "subagent",
+      "task": "只做一件事：回答「2+3 等于几」，一句话，然后结束。",
+      "pid": 9640,
+      "log": "C:\\Users\\17735\\.dsh\\phone-bridge\\agents\\桌面二测.log",
+      "createdAt": "2026-11-14T13:41:23.916Z"
+    },
+    {
       "id": "psess:session-0a425ca8-4475-4511-bdd4-bca092a30f20",
       "name": "workspace",
       "host": "phone",
       "kind": "session",
       "note": "手机上开着的会话 · /root/workspace",
       "running": true,
-      "at": "2026-11-14T13:38:19.187Z"
+      "at": "2026-11-14T13:41:55.490Z"
     },
     {
       "id": "psess:session-523447e5-feaa-47ce-bd43-56b88e528db7",
@@ -45,16 +74,43 @@
       "kind": "session",
       "note": "手机上开着的会话 · /root/workspace",
       "running": true,
-      "at": "2026-11-14T13:38:19.207Z"
+      "at": "2026-11-14T13:41:55.511Z"
     },
     {
-      "id": "psess:session-470e2263-01ab-43de-bb4a-bffd66f242ab",
+      "id": "psess:session-e2a3a2ff-182c-43ff-8d2b-2a4d9383bab4",
       "name": "root",
       "host": "phone",
       "kind": "session",
       "note": "手机上开着的会话 · /root",
       "running": true,
-      "at": "2026-11-14T13:38:19.227Z"
+      "at": "2026-11-14T13:41:55.528Z"
+    },
+    {
+      "id": "psess:session-a1d44812-c7c6-43e8-9ffe-de586c692e3e",
+      "name": "root",
+      "host": "phone",
+      "kind": "session",
+      "note": "手机上开着的会话 · /root",
+      "running": true,
+      "at": "2026-11-14T13:41:55.555Z"
+    },
+    {
+      "id": "psess:session-5de164ca-fdc0-4c3c-b967-c13d93d958bb",
+      "name": "root",
+      "host": "phone",
+      "kind": "session",
+      "note": "手机上开着的会话 · /root",
+      "running": true,
+      "at": "2026-11-14T13:41:55.575Z"
+    },
+    {
+      "id": "psess:session-c4c04af0-5e7c-44fa-ab20-4aba0b7c3611",
+      "name": "root",
+      "host": "phone",
+      "kind": "session",
+      "note": "手机上开着的会话 · /root",
+      "running": true,
+      "at": "2026-11-14T13:41:55.592Z"
     }
   ]
 }

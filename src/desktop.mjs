@@ -1953,13 +1953,13 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
 // 桌面子智能体需要 `dsh` 命令行（agent-run.mjs 用它跑 headless 会话）。
 function dshBin() {
   // 配置里点名优先，其次环境变量，最后看 PATH。
-  const configured = String(cfg()?.dshBin || '').trim()
+  const configured = String(loadDesktopConfig()?.dshBin || '').trim()
   if (configured) return configured
   return process.env.DSH_BIN || 'dsh'
 }
 
 function hasDshCli() {
-  const configured = String(cfg()?.dshBin || '').trim()
+  const configured = String(loadDesktopConfig()?.dshBin || '').trim()
   if (configured) return fs.existsSync(configured)
   if (process.env.DSH_BIN) return true
   try {

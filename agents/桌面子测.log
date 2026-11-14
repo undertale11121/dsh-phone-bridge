@@ -1,0 +1,9 @@
+2026-11-14T13:39:29.109Z failed: spawn EINVAL
+2026-11-14T13:40:12.381Z {"type":"session","sessionId":"session-affba39c-1dc5-423e-8f45-b7e1564873ca","cwd":"C:\\Users\\17735\\.dsh\\profiles\\desktop"}
+2026-11-14T13:40:12.382Z {"type":"status","phase":"turn_start","turn":1}
+2026-11-14T13:40:12.438Z {"type":"status","phase":"step_start","turn":1,"step":1}
+2026-11-14T13:40:12.457Z {"type":"status","phase":"step_end","turn":1,"step":1}
+2026-11-14T13:40:12.458Z {"type":"status","phase":"turn_end","turn":1,"reason":{"kind":"error","error":{"message":"llm-deepseek: no API key for provider route \"deepseek-official\"; store DEEPSEEK_API_KEY through the credentials service (the web Models page writes it), or export DEEPSEEK_API_KEY in the launching environment","code":"MISSING_CREDENTIAL"}}}
+2026-11-14T13:40:12.461Z {"type":"final","sessionId":"session-affba39c-1dc5-423e-8f45-b7e1564873ca","reason":{"kind":"error","error":{"message":"llm-deepseek: no API key for provider route \"deepseek-official\"; store DEEPSEEK_API_KEY through the credentials service (the web Models page writes it), or export DEEPSEEK_API_KEY in the launching environment","code":"MISSING_CREDENTIAL"}},"text":""}
+2026-11-14T13:40:12.462Z stderr: dsh: MISSING_CREDENTIAL: llm-deepseek: no API key for provider route "deepseek-official"; store DEEPSEEK_API_KEY through the credentials service (the web Models page writes it), or export DEEPSEEK_API_KEY in the launching environment
+2026-11-14T13:40:12.789Z finished with code 1

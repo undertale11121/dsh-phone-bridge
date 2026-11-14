@@ -21,3 +21,5 @@ node_modules/
 *.tgz
 .DS_Store
 Thumbs.db
+# 本地生成：headless 会话的模型配置（从 profile 抽出来，含模型列表）
+headless.patch.yml
