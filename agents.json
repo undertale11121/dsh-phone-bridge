@@ -10,26 +10,6 @@
       "at": "2026-11-14T13:24:22.898Z"
     },
     {
-      "id": "probe-hg54",
-      "name": "probe",
-      "host": "phone",
-      "kind": "subagent",
-      "task": "只做一件事：回答里写一句 PROBE-OK，不要读文件、不要跑命令。",
-      "pid": 4934,
-      "log": "/root/.dsh/phone-bridge/agents/probe-hg54.log",
-      "createdAt": "2026-11-14T13:30:49.275Z"
-    },
-    {
-      "id": "credtest-tr2a",
-      "name": "credtest",
-      "host": "phone",
-      "kind": "subagent",
-      "task": "只做一件事：用一句话回答「1+1 等于几」，然后立刻结束。",
-      "pid": 6277,
-      "log": "/root/.dsh/phone-bridge/agents/credtest-tr2a.log",
-      "createdAt": "2026-11-14T13:37:23.361Z"
-    },
-    {
       "id": "psess:session-470e2263-01ab-43de-bb4a-bffd66f242ab",
       "name": "root",
       "host": "phone",
@@ -39,42 +19,13 @@
       "at": "2026-11-14T13:38:19.227Z"
     },
     {
-      "id": "桌面子测",
-      "name": "桌面子测",
-      "host": "desktop",
-      "kind": "subagent",
-      "task": "只做一件事：回答「2+3 等于几」，一句话，然后结束。",
-      "pid": 31752,
-      "log": "C:\\Users\\17735\\.dsh\\phone-bridge\\agents\\桌面子测.log",
-      "createdAt": "2026-11-14T13:40:10.751Z"
-    },
-    {
-      "id": "桌面二测",
-      "name": "桌面二测",
-      "host": "desktop",
-      "kind": "subagent",
-      "task": "只做一件事：回答「2+3 等于几」，一句话，然后结束。",
-      "pid": 9640,
-      "log": "C:\\Users\\17735\\.dsh\\phone-bridge\\agents\\桌面二测.log",
-      "createdAt": "2026-11-14T13:41:23.916Z"
-    },
-    {
       "id": "psess:session-0a425ca8-4475-4511-bdd4-bca092a30f20",
       "name": "workspace",
       "host": "phone",
       "kind": "session",
       "note": "手机上开着的会话 · /root/workspace",
       "running": true,
-      "at": "2026-11-14T13:41:55.490Z"
-    },
-    {
-      "id": "psess:session-523447e5-feaa-47ce-bd43-56b88e528db7",
-      "name": "workspace",
-      "host": "phone",
-      "kind": "session",
-      "note": "手机上开着的会话 · /root/workspace",
-      "running": true,
-      "at": "2026-11-14T13:41:55.511Z"
+      "at": "2026-11-14T13:44:29.152Z"
     },
     {
       "id": "psess:session-e2a3a2ff-182c-43ff-8d2b-2a4d9383bab4",
@@ -83,7 +34,7 @@
       "kind": "session",
       "note": "手机上开着的会话 · /root",
       "running": true,
-      "at": "2026-11-14T13:41:55.528Z"
+      "at": "2026-11-14T13:44:29.189Z"
     },
     {
       "id": "psess:session-a1d44812-c7c6-43e8-9ffe-de586c692e3e",
@@ -92,7 +43,7 @@
       "kind": "session",
       "note": "手机上开着的会话 · /root",
       "running": true,
-      "at": "2026-11-14T13:41:55.555Z"
+      "at": "2026-11-14T13:44:29.208Z"
     },
     {
       "id": "psess:session-5de164ca-fdc0-4c3c-b967-c13d93d958bb",
@@ -101,7 +52,7 @@
       "kind": "session",
       "note": "手机上开着的会话 · /root",
       "running": true,
-      "at": "2026-11-14T13:41:55.575Z"
+      "at": "2026-11-14T13:44:29.231Z"
     },
     {
       "id": "psess:session-c4c04af0-5e7c-44fa-ab20-4aba0b7c3611",
@@ -110,7 +61,16 @@
       "kind": "session",
       "note": "手机上开着的会话 · /root",
       "running": true,
-      "at": "2026-11-14T13:41:55.592Z"
+      "at": "2026-11-14T13:44:29.252Z"
+    },
+    {
+      "id": "psess:session-523447e5-feaa-47ce-bd43-56b88e528db7",
+      "name": "workspace",
+      "host": "phone",
+      "kind": "session",
+      "note": "手机上开着的会话 · /root/workspace",
+      "running": true,
+      "at": "2026-11-14T13:50:31.384Z"
     }
   ]
 }

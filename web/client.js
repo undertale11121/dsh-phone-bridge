@@ -348,7 +348,7 @@ function __buildPhoneBridge(require) {
             h('div', { style: Object.assign({}, muted, { padding: '2px 0 6px' }) }, t.wakeHint),
             h('div', { style: Object.assign({}, row, { padding: '2px 0' }) },
               h('span', { style: muted }, t.wakeTarget),
-              h('span', { style: mono }, wakeTarget ? (wake.targetName ? wake.targetName + ' · ' + wakeTarget.slice(0, 8) : wakeTarget.slice(0, 8) + '…') : t.wakeNone),
+              h('span', { style: mono }, wakeTarget ? (wake.targetName ? wake.targetName + ' · ' + wakeTarget.replace(/^session-/, '').slice(0, 8) : wakeTarget.replace(/^session-/, '').slice(0, 8) + '…') : t.wakeNone),
             ),
             wake.ready === false
               ? h('div', { style: Object.assign({}, muted, { color: 'var(--dsw-alias-accent-red, #f28b82)' }) }, t.wakeNotReady)
@@ -497,7 +497,7 @@ function __buildPhoneBridge(require) {
                 },
                   h('option', { value: '' }, t.collabNone),
                   live.map(function (item) {
-                    var label = (item.title || item.cwd || '会话') + ' · ' + String(item.id).slice(0, 8)
+                    var label = (item.title || item.cwd || '会话') + ' · ' + String(item.id).replace(/^session-/, '').slice(0, 8)
                     return h('option', { key: item.id, value: item.id }, label)
                   }),
                 ),

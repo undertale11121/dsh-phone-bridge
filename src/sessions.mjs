@@ -127,7 +127,8 @@ export function listSessions() {
     .sort((a, b) => String(b.ast || b.at || '').localeCompare(String(a.ast || a.at || '')))
     .map((row) => ({
       id: row.id,
-      short: String(row.id).slice(0, 8),
+      // session-<uuid>：前 8 位正好是 "session-"，显示出来等于没显示
+      short: String(row.id).replace(/^session-/, '').slice(0, 8),
       name: row.name || '',
       purpose: row.purpose || '',
       project: row.project || '',
