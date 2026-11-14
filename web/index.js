@@ -1020,13 +1020,25 @@ async function wakeTick(agents) {
     } catch (error) {
       state.lastError = String(error?.message || error)
       for (const item of items) failedSeqs.push(Number(item.seq) || 0)
-      break
+      // 原来这里是 break：一个目标投不进去，排在它后面的组就永远没机会了，
+      // 声音最大的那个坏会话会把整条链路堵死（代码审查发现）。
+      continue
     }
   }
-  // cursor 只推到「失败消息之前」的最大已投 seq，没投的留着下次再来。
-  const boundary = failedSeqs.length ? Math.min(...failedSeqs) : Infinity
-  const safeSeqs = sentSeqs.filter((seq) => seq < boundary)
-  if (safeSeqs.length) state.cursor = Math.max(...safeSeqs, Number(state.cursor) || 0)
+  // 只推进到「从当前 cursor 起连续处理过」的那一段，理由同 inboxTick：
+  // 取 min(failedSeqs) 当边界会把失败组之后已成功的消息留在游标外，下一轮重投一遍。
+  const handled = new Set([...sentSeqs, ...skipped])
+  const seqs = (data.messages || [])
+    .map((item) => Number(item.seq) || 0)
+    .filter((seq) => seq > 0)
+    .sort((a, b) => a - b)
+  let cursorNow = Number(state.cursor) || 0
+  for (const seq of seqs) {
+    if (seq <= cursorNow) continue
+    if (!handled.has(seq)) break
+    cursorNow = seq
+  }
+  state.cursor = cursorNow
   writeWakeState(state)
 }
 
@@ -1298,7 +1310,17 @@ const lastSourcePath = () => path.join(bridgeDir(), 'last-desktop.json')
 // peerLinks 单独存一个文件：phone.json 是手机 bridge 在维护的，它一写就把我们塞进去的
 // 字段覆盖掉（实测第一版就是这样丢的）。
 const peerLinksPath = () => path.join(bridgeDir(), 'peer-links.json')
-const readPeerLinks = () => readJson(peerLinksPath(), null) || (readJson(phoneConfigPath(), {}) || {}).peerLinks || {}
+const readPeerLinks = () => {
+  const raw = readJson(peerLinksPath(), null) || (readJson(phoneConfigPath(), {}) || {}).peerLinks || {}
+  // 只认「能当会话 id 用」的值：早期版本把电脑的 links 表（值形如 {phoneId, at}）
+  // 也写进过这个文件，混在一起会让分身映射失效（见代码审查报告）。
+  const out = {}
+  for (const [key, value] of Object.entries(raw || {})) {
+    if (typeof value === 'string' && value) out[key] = value
+    else if (value && typeof value.phoneId === 'string' && value.phoneId) out[key] = value.phoneId
+  }
+  return out
+}
 
 // 手机侧按「来源电脑会话」分身：一个电脑会话对应一个手机会话。
 // 第一次收到某个电脑会话的消息就新建一个，映射记在 peer-links.json（手机本地）。
@@ -1362,10 +1384,15 @@ async function inboxTick(agents, lastReport) {
     peerLinks = snapshot?.links && typeof snapshot.links === 'object' ? snapshot.links : {}
   } catch {}
   // 开关的真源在电脑上，手机这边只是镜像一份给会话顶部的按钮看。
+  // 电脑上的 links 表只做 UI 镜像，**绝不能**写进 peer-links.json —— 那个文件存的是
+  // 「电脑会话 → 手机会话」的分身映射（字符串值），两种结构混写会让映射全部失效，
+  // 结果每批消息都新开一个手机会话（代码审查发现的真 bug）。
   if (peerLinks) {
     try {
-      if (JSON.stringify(config.peerLinks || {}) !== JSON.stringify(peerLinks)) {
-        writeJson(path.join(bridgeDir(), 'peer-links.json'), peerLinks)
+      const mirrorPath = path.join(bridgeDir(), 'phone-links.json')
+      const previous = readJson(mirrorPath, null)
+      if (JSON.stringify(previous || {}) !== JSON.stringify(peerLinks)) {
+        writeJson(mirrorPath, peerLinks)
       }
     } catch {}
   }
@@ -1386,7 +1413,12 @@ async function inboxTick(agents, lastReport) {
       skipped.push(Number(item.seq) || 0)
       return false
     }
-    if (isNotice(item.text)) return false
+    // 系统通知（「（手机已连上电脑）」）不唤醒模型，但游标必须跨过去，
+    // 否则一窗全是通知时后面的真实消息会被饿死（和 wakeTick 保持一致）。
+    if (isNotice(item.text)) {
+      skipped.push(Number(item.seq) || 0)
+      return false
+    }
     const to = String(item.to || '')
     // 收「给手机」的，也收「点名某个手机会话」的：phone:<id | 名字 | 标题>
     const forPhone = to === 'phone' || to.startsWith('phone:')
@@ -1443,6 +1475,8 @@ async function inboxTick(agents, lastReport) {
       }
       if (!target) {
         misses.push(want)
+        // 找不到目标的也必须算「没投出去」，否则游标会跨过它们，消息就永久丢了。
+        for (const item of rows) failedSeqs.push(Number(item.seq) || 0)
         continue
       }
       try {
@@ -1460,10 +1494,21 @@ async function inboxTick(agents, lastReport) {
     if (fails.length) state.lastError = fails[0]
     else if (misses.length) state.lastError = `找不到这些手机会话：${misses.join('、')}`
     else state.lastError = ''
-    // 只推进到「失败消息之前」的最大已投 seq：跨过失败的那条就再也拉不回来了。
-    const boundary = failedSeqs.length ? Math.min(...failedSeqs) : Infinity
-    const safe = sent.filter((seq) => seq < boundary)
-    if (safe.length) state.cursor = Math.max(...safe, Number(state.cursor) || 0)
+    // 只推进到「从当前 cursor 起连续处理过」的那一段。以前取 min(failedSeqs) 当边界，
+    // 分组交错时（A 组 seq 1,3 成功、B 组 seq 2 失败）会把已经投成功的 3 留在游标外，
+    // 下一轮重投一遍 —— 模型会看到重复消息（代码审查发现）。
+    const handled = new Set([...sent, ...skipped])
+    const seqs = (data?.messages || [])
+      .map((item) => Number(item.seq) || 0)
+      .filter((seq) => seq > 0)
+      .sort((a, b) => a - b)
+    let cursorNow = Number(state.cursor) || 0
+    for (const seq of seqs) {
+      if (seq <= cursorNow) continue
+      if (!handled.has(seq)) break
+      cursorNow = seq
+    }
+    state.cursor = cursorNow
     writeJson(inboxStatePath(), state)
   }
 

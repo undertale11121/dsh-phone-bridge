@@ -2146,7 +2146,11 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
       // 用户要求：会话没开互联，互联类工具就当不存在（告诉智能体去打开关）。
       // 只挡跨端工具；配置/诊断类（bridge_*、phone_bridge_*）照常可用，否则出问题时连诊断都做不了。
       if (process.env.PHONE_BRIDGE_NO_GATE !== '1') {
-        const gate = gateMessage(name, readLinksFile() || {}, newestDesktopSessionId())
+        // caller.sessionId 是 DSH 通过 MCP 的 _meta 带回来的「正在说话的那个会话」，
+        // 比扫 projcache 猜 mtime 准得多；只有 caller 缺失时才退化成推断
+        // （多会话并行、刚切会话、新会话还没有 projcache 时推断会判错）。
+        const current = caller?.sessionId || newestDesktopSessionId()
+        const gate = gateMessage(name, readLinksFile() || {}, current)
         if (gate) throw new Error(gate)
       }
       return handler(args)
