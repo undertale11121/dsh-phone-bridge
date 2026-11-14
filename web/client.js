@@ -1,9 +1,10 @@
 // Browser half: a card on the Plugins page that talks to /phone-bridge/config.
 // Hand-written in the lazy-CJS bundle protocol (no build step, no imports from
 // dsh client packages) so the zip the user copies to Windows needs no toolchain.
-window.__ModuleLoader__.load({
-  id: 'dsh-phone-bridge-web',
-  factory: (require) => {
+// 按包名注册：桌面装的包叫 dsh-phone-bridge，手机上那个还叫 dsh-phone-bridge-web。
+// 两个 id 挂同一份导出，但只构建一次 —— 否则 apply 跑两遍，每条消息投两次。
+function __buildPhoneBridge(require) {
+  if (window.__phoneBridgeModule) return window.__phoneBridgeModule
     var module = { exports: {} }
     var exports = module.exports
 
@@ -658,6 +659,10 @@ window.__ModuleLoader__.load({
 
     exports.apply = apply
     exports.inject = []
+    window.__phoneBridgeModule = module.exports
     return module.exports
-  },
+}
+
+;['dsh-phone-bridge', 'dsh-phone-bridge-web'].forEach(function (id) {
+  window.__ModuleLoader__.load({ id: id, factory: __buildPhoneBridge })
 })

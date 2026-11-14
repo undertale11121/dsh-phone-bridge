@@ -103,9 +103,11 @@ check('未知开关 400', wrong.res.status === 400, wrong.res.body)
 // ── browser half ─────────────────────────────────────────────────────────────
 const source = fs.readFileSync(path.join(root, 'web', 'client.js'), 'utf8')
 let loaded = null
-const fakeWindow = { __ModuleLoader__: { load(definition) { loaded = definition } } }
+const loadedIds = []
+const fakeWindow = { __ModuleLoader__: { load(definition) { loaded = definition; loadedIds.push(definition.id) } } }
 new Function('window', source)(fakeWindow)
 check('客户端 bundle 调用 __ModuleLoader__.load', Boolean(loaded) && loaded.id === 'dsh-phone-bridge-web')
+check('新旧两个包名都注册了 client', loadedIds.includes('dsh-phone-bridge') && loadedIds.includes('dsh-phone-bridge-web'), loadedIds.join(','))
 
 const tree = []
 const fakeDocument = { documentElement: { lang: 'zh-CN' } }

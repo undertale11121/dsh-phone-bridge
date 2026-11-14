@@ -9,10 +9,12 @@ const file = path.join(root, 'web', 'client.js')
 const src = fs.readFileSync(file, 'utf8')
 
 let registered = null
+const registeredIds = []
 globalThis.window = {
   __ModuleLoader__: {
     load(spec) {
       registered = spec
+      registeredIds.push(spec.id)
     },
   },
 }
@@ -21,7 +23,9 @@ globalThis.document = { documentElement: { lang: 'zh' } }
 // eslint-disable-next-line no-new-func
 new Function(src)()
 if (!registered) throw new Error('client.js 没有调用 __ModuleLoader__.load')
-if (registered.id !== 'dsh-phone-bridge-web') throw new Error(`bundle id 不对：${registered.id}`)
+if (!registeredIds.includes('dsh-phone-bridge') || !registeredIds.includes('dsh-phone-bridge-web')) {
+  throw new Error(`bundle id 不对：${registeredIds.join(',')}`)
+}
 
 const fakeReact = {
   createElement(type, props, ...children) {
