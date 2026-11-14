@@ -1905,10 +1905,19 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
     },
     async bridge_start() {
       const info = await ensureDesktopServer()
-      const pairs = info.pairing || []
+      // ensureDesktopServer 走的是 /health，那边不一定带 pairing；直接问
+      // 本实例要，免得明明有 192.168.x.x 却说「没有局域网 IPv4」骗人。
+      let pairs = info.pairing || []
+      if (!pairs.length) {
+        try {
+          pairs = typeof this?.pairing === 'function' ? this.pairing() : []
+        } catch {
+          pairs = []
+        }
+      }
       return [
         `后台桥接已在运行（pid ${info.pid}，端口 ${info.port}）`,
-        pairs.length ? `配对串：${pairs[0]}` : '（没有局域网 IPv4，见 bridge_log）',
+        pairs.length ? `配对串：${pairs[0]}` : `（这台电脑没有局域网 IPv4 地址——手机和电脑要连同一个 Wi-Fi；地址见 ${desktopLogPath()}）`,
         `日志：${info.log || desktopLogPath()}`,
       ].join('\n')
     },

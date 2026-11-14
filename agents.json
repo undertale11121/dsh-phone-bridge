@@ -64,22 +64,22 @@
       "at": "2026-11-14T13:44:29.252Z"
     },
     {
-      "id": "psess:session-7cf16631-d62e-4813-baa0-cb69505dc80f",
-      "name": "憋尿失禁角色扮演",
-      "host": "phone",
-      "kind": "session",
-      "note": "手机上开着的会话 · /root/workspace",
-      "running": true,
-      "at": "2026-11-14T14:50:43.859Z"
-    },
-    {
       "id": "psess:session-523447e5-feaa-47ce-bd43-56b88e528db7",
       "name": "dsh多端模型协作插件 (1)",
       "host": "phone",
       "kind": "session",
       "note": "手机上开着的会话 · /root/workspace",
       "running": true,
-      "at": "2026-11-14T14:59:52.112Z"
+      "at": "2026-11-14T15:01:52.902Z"
+    },
+    {
+      "id": "psess:session-7cf16631-d62e-4813-baa0-cb69505dc80f",
+      "name": "憋尿失禁角色扮演",
+      "host": "phone",
+      "kind": "session",
+      "note": "手机上开着的会话 · /root/workspace",
+      "running": true,
+      "at": "2026-11-14T15:01:52.922Z"
     }
   ]
 }

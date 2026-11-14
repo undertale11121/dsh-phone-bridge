@@ -107,6 +107,29 @@ export function normalizeLevel(value) {
   return 'normal'
 }
 
+// 对话文件只增不减：跑几个月就是几 MB，而且每次 read 都要整文件解析。
+// 超过 MAX_ROWS 条就把最老的挪去 thread-archive-<时间>.jsonl，seq 不重置——
+// 收件器靠 seq 单调推 cursor，一重置就会重投或漏投。
+export const MAX_ROWS = 800
+export const KEEP_ROWS = 400
+
+function rotate(all) {
+  if (all.length <= MAX_ROWS) return all
+  const cut = all.length - KEEP_ROWS
+  const old = all.slice(0, cut)
+  const keep = all.slice(cut)
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const archive = path.join(path.dirname(threadPath()), `thread-archive-${stamp}.jsonl`)
+  try {
+    fs.writeFileSync(archive, `${old.map((row) => JSON.stringify(row)).join('\n')}\n`)
+    fs.writeFileSync(threadPath(), `${keep.map((row) => JSON.stringify(row)).join('\n')}\n`)
+    log(`对话文件轮转：${old.length} 条归档到 ${path.basename(archive)}，保留最近 ${keep.length} 条`)
+  } catch (error) {
+    log(`对话文件轮转失败（不影响收发）：${error?.message || error}`)
+  }
+  return keep
+}
+
 export function append(from, text, to = 'all', level = 'normal') {
   const clean = String(text ?? '').trim()
   if (!clean) throw new Error('消息是空的')
@@ -124,6 +147,7 @@ export function append(from, text, to = 'all', level = 'normal') {
     }
     ensureDir(path.dirname(threadPath()))
     fs.appendFileSync(threadPath(), `${JSON.stringify(row)}\n`)
+    rotate(all.concat([row]))
     return row
   })
 }
