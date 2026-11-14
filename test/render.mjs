@@ -156,6 +156,20 @@ function textOf(tree) {
 
 // 3) 侧栏图标不能炸
 {
+  // 会话头部那颗「互联」：注册上去的是 session 级列表插槽，inject 拿当前会话 id。
+  const headerSwitch = slots.find((slot) => slot.options.name === 'conversation.session.header.actions')
+  if (!headerSwitch) throw new Error('没有注册到会话头部的开关')
+  const headerProps = headerSwitch.options.inject('session-abc')
+  if (headerProps?.sessionId !== 'session-abc') throw new Error(`会话头部 inject 没拿到会话 id：${JSON.stringify(headerProps)}`)
+  // 首帧（还没拉到配置）也必须是颗按钮，不能白屏。
+  queue.values = [null, false, '']
+  queue.cursor = 0
+  const chip = headerSwitch.component(headerProps)
+  if (!chip || chip.type !== 'button') throw new Error('会话头部开关首帧不是按钮')
+  const chipText = String((chip.props?.children || []).join(''))
+  if (!chipText.includes('互联')) throw new Error(`会话头部开关文案不对：${chipText}`)
+  console.log(`  会话头部开关：${chipText}`)
+
   const icon = renderWith(sidebar.component, [])
   if (!icon) throw new Error('侧栏图标没渲染出来')
   console.log('✓ 侧栏图标渲染通过')
