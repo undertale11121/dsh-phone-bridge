@@ -35,6 +35,7 @@
   },
   "files": [
     "bridge.mjs",
+    "bin",
     "src",
     "web",
     "test",
