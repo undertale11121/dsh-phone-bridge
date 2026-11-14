@@ -553,7 +553,13 @@ class DesktopBridge {
           const liveNow = readJson(path.join(bridgeDir(), 'live.json'), {})
           key = String((Array.isArray(liveNow?.sessions) ? liveNow.sessions[0]?.id : '') || '')
         }
-        if (!key) return sendJson(res, 404, { ok: false, text: `手机上的 ${phoneId.replace(/^session-/, '').slice(0, 8)} 还没和任何电脑会话连起来` })
+        if (!key) {
+          // 用户 m04603：手机上点开互联、电脑上却一个会话都没开 —— 别报错，
+          // 留张便签给宿主半，让它开一个新会话再接上。
+          store.pendingNewSession = { phoneId, at: new Date().toISOString() }
+          writeJson(desktopConfigPath(), store)
+          return sendJson(res, 200, { ok: true, pending: true, text: '电脑上没有开着的会话，正在给你开一个新的…' })
+        }
         if (body?.off) delete links[key]
         else links[key] = { phoneId: phoneId || String(links[key]?.phoneId || ''), at: new Date().toISOString() }
         store.links = links
@@ -2012,6 +2018,16 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
       }
       const handler = handlers[name]
       if (!handler) throw new Error(`未实现：${name}`)
+      // 用户要求：会话没开互联，互联类工具就当不存在（告诉智能体去打开关）。
+      // 只挡跨端工具；配置/诊断类（bridge_*、phone_bridge_*）照常可用，否则出问题时连诊断都做不了。
+      if (/^(peer_|phone_|agent_|session_)/.test(name)) {
+        const links = readJson(desktopConfigPath(), {})?.links
+        if (!links || Object.keys(links).length === 0) {
+          throw new Error(
+            '这个会话没开互联，互联工具现在不可用。先在这个会话顶部点「🔗 互联」（或让对端用 peer_link 开一个），开了之后这些工具立刻能用。',
+          )
+        }
+      }
       return handler(args)
     },
     onShutdown: () => {

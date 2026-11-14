@@ -380,7 +380,16 @@ async function runAction(body) {
   }
   if (body.action === 'link') {
     // 面板上某个会话的「互联」开关：打开 = 配一个对端会话，关闭 = 删掉。
-    const desktopId = String(body.desktopId || '').trim()
+    let desktopId = String(body.desktopId || '').trim()
+    if (!desktopId && !body.off) {
+      // 用户 m04603：「一端打开互联另一端如果没有对应对话的话，新建对话的功能没实现」
+      // desktopId 没给 = 对端要求这边开一个新会话接上。
+      try {
+        desktopId = await createFreshSession()
+      } catch (error) {
+        throw new Error(`${error?.message || error}（先在这个会话里手动开一个新对话也行）`)
+      }
+    }
     if (!desktopId) throw new Error('要指定是哪个电脑会话')
     const links = readLinks(config)
     if (body.off) {
@@ -766,10 +775,50 @@ export function matchSession(live, want) {
   )
 }
 
+// 用户要的「另一端没有对应对话就新建」：在这里真的把会话开出来。
+// DSH 不许插件凭空建会话，但宿主进程里有 agents.create（AgentLoop 的工厂），
+// 我们就在宿主半调用它 —— agentOptions 留空表示沿用默认模型。
+async function createFreshSession() {
+  const agents = agentsRef
+  if (!agents || typeof agents.create !== 'function') {
+    throw new Error('这台电脑上的 DSH 不支持自动新开会话（agents.create 不可用）')
+  }
+  const id = `session-${crypto.randomUUID()}`
+  await agents.create({ sessionId: id, agentOptions: {} })
+  return id
+}
+
+// 手机点了开关、但电脑上一个会话都没开：手机那边写了一张便签过来
+// （desktop.json.pendingNewSession），这里看到就开一个新会话并接上。
+async function fulfilPendingSession() {
+  const config = readConfig()
+  const pending = config.pendingNewSession
+  if (!pending || !pending.phoneId) return null
+  let id = ''
+  try {
+    id = await createFreshSession()
+  } catch (error) {
+    console.error(`[phone-bridge] 自动新开会话失败：${error?.message || error}`)
+    return null
+  }
+  const links = readLinks(config)
+  links[id] = { phoneId: String(pending.phoneId), at: new Date().toISOString() }
+  config.links = links
+  delete config.pendingNewSession
+  writeJson(configPath(), config)
+  return id
+}
+
 async function wakeTick(agents) {
   const config = readConfig()
   const wake = readWake(config)
   const state = readWakeState()
+  // 手机端要求「电脑没有会话时自动开一个」：先把便签兑现，再正常跑唤醒。
+  try {
+    await fulfilPendingSession()
+  } catch {
+    // 开不出来不能拖住唤醒
+  }
   // 先把开着的会话补进会话目录，session_list / session_note 才有的可选
   try {
     if (wake.enabled || config.token) syncRegistry(agents)
