@@ -1328,7 +1328,9 @@ async function inboxTick(agents, lastReport) {
 
   if (incoming.length) {
     const live = listLiveSessions(agents)
-    if (!live.length) {
+    // 一个活会话都没有时，只有「带来源」的消息还救得回来：按来源新建一个会话投进去。
+    // 不带来源的没法判断该给谁，还是老规矩：不动 cursor、消息留在工作台。
+    if (!live.length && !incoming.some((item) => item.desktopId)) {
       // 和桌面侧一个规矩：没会话就**不动 cursor**，消息留着，绝不吞。
       state.lastError = `手机上现在没有开着的会话，${incoming.length} 条消息留在工作台`
       writeJson(inboxStatePath(), state)
