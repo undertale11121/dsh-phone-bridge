@@ -1030,6 +1030,20 @@ async function wakeTick(agents) {
       continue
     }
   }
+  // 同一条连续投不出去超过 3 次就放弃（消息留在工作台里，peer_read 仍能看到），
+  // 否则游标不动、每 3 秒重投一遍，对端会看到同一条消息反复出现。
+  const giveUp = state.giveUp || {}
+  for (const seq of failedSeqs) {
+    const times = (giveUp[seq] || 0) + 1
+    if (times >= 3) {
+      skipped.push(seq)
+      delete giveUp[seq]
+    } else {
+      giveUp[seq] = times
+    }
+  }
+  for (const seq of sentSeqs) delete giveUp[seq]
+  state.giveUp = giveUp
   // 只推进到「从当前 cursor 起连续处理过」的那一段，理由同 inboxTick：
   // 取 min(failedSeqs) 当边界会把失败组之后已成功的消息留在游标外，下一轮重投一遍。
   const handled = new Set([...sentSeqs, ...skipped])
@@ -1340,10 +1354,23 @@ async function ensureDesktopSession(agents, live, desktopId) {
   // agentOptions 还必须给 provider/model，否则一跑就是「has no provider/model」。
   const cwd = live.map((row) => row && row.cwd).find((value) => typeof value === 'string' && value.startsWith('/')) || process.cwd()
   const agentOptions = defaultModel() || {}
-  await agents.create({ sessionId: id, meta: { cwd }, agentOptions })
-  writeJson(peerLinksPath(), { ...links, [desktopId]: id })
-  console.log(`[phone-bridge] 电脑会话 ${String(desktopId).replace(/^session-/, '').slice(0, 8)} → 手机会话 ${id.replace(/^session-/, '').slice(0, 8)}`)
-  return { id }
+  let created = id
+  try {
+    await agents.create({ sessionId: id, meta: { cwd }, agentOptions })
+  } catch (error) {
+    const message = String(error?.message || error)
+    // 会话文件已经在了（上次建过、现在没打开）。**绝不能重建** —— 重建会让每一轮轮询
+    // 都新开一个会话，同时把同一条消息反复重投（实测被投了 15 次以上）。
+    // 直接沿用这个 id：投得进去就投，投不进去由上层记失败并最终放弃。
+    if (/already exists/i.test(message)) {
+      writeJson(peerLinksPath(), { ...readPeerLinks(), [desktopId]: id })
+      return { id }
+    }
+    throw error
+  }
+  writeJson(peerLinksPath(), { ...readPeerLinks(), [desktopId]: created })
+  console.log(`[phone-bridge] 电脑会话 ${String(desktopId).replace(/^session-/, '').slice(0, 8)} → 手机会话 ${created.replace(/^session-/, '').slice(0, 8)}`)
+  return { id: created }
 }
 
 async function inboxTick(agents, lastReport) {
@@ -1499,6 +1526,20 @@ async function inboxTick(agents, lastReport) {
     if (fails.length) state.lastError = fails[0]
     else if (misses.length) state.lastError = `找不到这些手机会话：${misses.join('、')}`
     else state.lastError = ''
+    // 同一条连续投不出去超过 3 次就放弃（消息还留在工作台里，模型 peer_read 仍能看到，
+    // 但没有必要每 3 秒重投一遍 —— 实测同一条被重放了 15 次以上，把对端刷屏了）。
+    const giveUp = state.giveUp || {}
+    for (const seq of failedSeqs) {
+      const times = (giveUp[seq] || 0) + 1
+      if (times >= 3) {
+        skipped.push(seq)
+        delete giveUp[seq]
+      } else {
+        giveUp[seq] = times
+      }
+    }
+    for (const seq of sent) delete giveUp[seq]
+    state.giveUp = giveUp
     // 只推进到「从当前 cursor 起连续处理过」的那一段。以前取 min(failedSeqs) 当边界，
     // 分组交错时（A 组 seq 1,3 成功、B 组 seq 2 失败）会把已经投成功的 3 留在游标外，
     // 下一轮重投一遍 —— 模型会看到重复消息（代码审查发现）。
