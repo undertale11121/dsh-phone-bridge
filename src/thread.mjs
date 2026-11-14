@@ -19,6 +19,11 @@ function lockPath() {
   return `${threadPath()}.lock`
 }
 
+// 同步睡一小会：Atomics.wait 不烧 CPU。原来是 while 空转，抢锁时会把一个核跑满。
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
 // A tiny lock file keeps two DSH sessions from handing out the same seq.
 function withLock(fn) {
   const file = lockPath()
@@ -45,10 +50,7 @@ function withLock(fn) {
       } catch {
         /* ignore */
       }
-      const until = Date.now() + 15
-      while (Date.now() < until) {
-        /* spin briefly; the critical section is a couple of writes */
-      }
+      sleepSync(15)
     }
   }
   throw new Error('对话文件被别的进程占用，稍后再试')
@@ -131,7 +133,7 @@ function rotate(all) {
   const cut = all.length - KEEP_ROWS
   const old = all.slice(0, cut)
   const keep = all.slice(cut)
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 23)
   const archive = path.join(path.dirname(threadPath()), `thread-archive-${stamp}.jsonl`)
   try {
     writeAtomic(archive, `${old.map((row) => JSON.stringify(row)).join('\n')}\n`)
