@@ -372,10 +372,14 @@ async function runAction(body) {
       writeJson(configPath(), config)
       return { text: '已断开这个会话的互联' }
     }
-    links[desktopId] = { phoneId: String(body.phoneId || '').trim(), at: new Date().toISOString() }
+    // 用户 m04337「不用手动选」：没指定手机会话就接最近上报的那个。
+    const phoneId = String(body.phoneId || '').trim() || defaultPhoneSession()
+    if (!phoneId) throw new Error('手机上还没上报任何会话：先让手机连上电脑，手机端也要跑 0.6.4 以上的插件')
+    links[desktopId] = { phoneId, at: new Date().toISOString() }
     config.links = links
     writeJson(configPath(), config)
-    return { text: '已打开这个会话的互联' }
+    const short = (id) => String(id).replace(/^session-/, '').slice(0, 8)
+    return { text: `已把这个会话连到手机 ${short(phoneId)}` }
   }
   if (body.action === 'collab') {
     const collab = readCollab(config)
@@ -416,6 +420,13 @@ function readCollab(config) {
 // 互联开关：一个电脑会话对一个手机会话，{ [电脑会话 id]: { phoneId, at } }。
 // 用户的原话是「在每个会话里面做一个互联开关，打开后……不用用户自己选」——
 // 开关打开后，谁不点名发的消息都默认走这条配对。
+// 用户要「不用手动选」：没给 phoneId 时，自动用手机上最近上报的那个会话。
+export function defaultPhoneSession() {
+  const rows = readAgents().filter((a) => a.host === 'phone' && String(a.id).startsWith('psess:'))
+  if (!rows.length) return ''
+  return String(rows[rows.length - 1].id).slice('psess:'.length)
+}
+
 function readLinks(config) {
   const raw = (config || readConfig()).links
   return raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}

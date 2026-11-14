@@ -180,12 +180,16 @@ check('导出 apply 与 inject', typeof client.apply === 'function' && Array.isA
 // bundle 里读 document.documentElement.lang，测试环境补一个
 globalThis.document = fakeDocument
 client.apply(ctx)
-const three = slotsSeen.length === 4
+const three = slotsSeen.length === 5
   && slotsSeen[0].descriptor.name === 'plugins.bundle.config' && slotsSeen[0].descriptor.key === 'dsh-phone-bridge-web'
   && slotsSeen[1].descriptor.name === 'plugins.bundle.config' && slotsSeen[1].descriptor.key === 'dsh-phone-bridge'
   && slotsSeen[2].descriptor.name === 'sidebar.panellist' && slotsSeen[2].descriptor.id === 'phone-bridge'
   && slotsSeen[3].descriptor.name === 'main' && slotsSeen[3].descriptor.key === 'phone-bridge'
-check('挂到两个 bundle key + sidebar.panellist + main', three, JSON.stringify(slotsSeen.map((s) => s.descriptor)))
+  && slotsSeen[4].descriptor.name === 'conversation.session.header.actions' && slotsSeen[4].descriptor.id === 'phone-bridge-link'
+check('两个卡片 + 侧栏 + 面板 + 会话头部开关', three, JSON.stringify(slotsSeen.map((s) => s.descriptor)))
+const headSwitch = slotsSeen[4]
+const headProps = headSwitch.descriptor.inject('session-abc')
+check('会话头部开关拿到当前会话 id', headProps && headProps.sessionId === 'session-abc', JSON.stringify(headProps))
 check('侧栏行写的是「互联」', slotsSeen[2] && slotsSeen[2].descriptor.label() === '互联', slotsSeen[2] && String(slotsSeen[2].descriptor.label()))
 const icon = slotsSeen[2].component({ size: 18 })
 check('侧栏图标是 svg', icon && icon.type === 'svg' && icon.props.width === 18, icon && icon.type)

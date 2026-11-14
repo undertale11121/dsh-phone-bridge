@@ -10,6 +10,15 @@
       "calls": 0,
       "purpose": "插件全量回归验证",
       "project": "dsh-phone-bridge"
+    },
+    "session-22a85ecb-21d4-4c86-975d-27b138dccab8": {
+      "id": "session-22a85ecb-21d4-4c86-975d-27b138dccab8",
+      "name": "workspace",
+      "cwd": "D:\\c\\dsh\\workspace",
+      "host": "desktop",
+      "at": "2026-11-14T15:27:41.575Z",
+      "ast": "2026-11-14T15:27:41.575Z",
+      "calls": 0
     }
   }
 }

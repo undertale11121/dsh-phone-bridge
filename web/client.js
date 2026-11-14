@@ -746,6 +746,88 @@ function __buildPhoneBridge(require) {
       )
     }
 
+    // 会话头部的小开关。用户 m04337：「直接做到会话里面，一端打开另一端同步，
+    // 不用手动选」。挂进 session-scoped 插槽 conversation.session.header.actions，
+    // 该插槽注册时用 inject: sessionId => ... 把当前会话 id 递过来。
+    function LinkSwitch(React, pack) {
+      var h = React.createElement
+      var useEffect = React.useEffect
+      var useState = React.useState
+      return function PhoneBridgeLink(props) {
+        var sessionId = String((props && props.sessionId) || '')
+        var statePair = useState(null)
+        var state = statePair[0]
+        var setState = statePair[1]
+        var busyPair = useState(false)
+        var busy = busyPair[0]
+        var setBusy = busyPair[1]
+        var tipPair = useState('')
+        var tip = tipPair[0]
+        var setTip = tipPair[1]
+
+        function load() {
+          fetch('/phone-bridge/config', { headers: { accept: 'application/json' } })
+            .then(function (res) { return res.ok ? res.json() : null })
+            .then(function (data) { if (data) setState(data) })
+            .catch(function () {})
+        }
+        useEffect(function () { load() }, [sessionId])
+
+        if (!sessionId) return null
+        var links = (state && state.links) || {}
+        var on = !!links[sessionId]
+
+        function toggle() {
+          if (busy) return
+          setBusy(true)
+          setTip('')
+          var body = { action: 'link', desktopId: sessionId, off: on }
+          if (!on && state && state.collab && state.collab.phoneSessionId) {
+            body.phoneId = state.collab.phoneSessionId
+          }
+          return fetch('/phone-bridge/config', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(body),
+          }).then(function (res) { return res.json() })
+            .then(function (data) {
+              setBusy(false)
+              if (!data || data.ok === false) {
+                setTip(String((data && (data.text || data.error)) || '没成功'))
+                return
+              }
+              setTip(String(data.text || ''))
+              load()
+            })
+            .catch(function (err) { setBusy(false); setTip(String((err && err.message) || err)) })
+        }
+
+        var color = on ? 'var(--dsw-alias-accent-blue, #4c8dff)' : 'inherit'
+        return h('button', {
+          type: 'button',
+          onClick: toggle,
+          disabled: busy,
+          title: tip || (on ? '这个会话已和手机上的会话互联，点一下断开' : '把这个会话和手机上的会话连起来，之后两边模型直接对话'),
+          style: {
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 4,
+            height: 26,
+            padding: '0 9px',
+            borderRadius: 13,
+            cursor: busy ? 'default' : 'pointer',
+            fontSize: 12,
+            lineHeight: 1,
+            whiteSpace: 'nowrap',
+            border: '1px solid ' + (on ? color : 'var(--dsw-alias-border-l2, rgba(127,127,127,0.35))'),
+            background: on ? 'rgba(76,141,255,0.14)' : 'transparent',
+            color: color,
+            opacity: busy ? 0.6 : 1,
+          },
+        }, (on ? '\u{1F517} ' : '') + (on ? '互联中' : '互联'))
+      }
+    }
+
     function apply(ctx) {
       if (typeof ctx.inject !== 'function') return
       var pack = { locale: '' }
@@ -780,6 +862,20 @@ function __buildPhoneBridge(require) {
           })
           yield scope.slots.register({ name: 'main', key: PANEL_ID, inject: function () { return {} } }, Card(React, pack, { surface: 'panel' }))
         })
+        // 会话界面右上角那颗「互联」：列表型 session 级插槽，inject 拿当前会话。
+        try {
+          scope.slots.inject('conversation.session.header.actions', function* () {
+            yield scope.slots.register({
+              name: 'conversation.session.header.actions',
+              id: 'phone-bridge-link',
+              order: 40,
+              locale: '',
+              inject: function (sessionId) { return { sessionId: sessionId } },
+            }, LinkSwitch(React, pack))
+          })
+        } catch (error) {
+          console.error('[phone-bridge] session switch skipped: ' + error)
+        }
       })
     }
 
