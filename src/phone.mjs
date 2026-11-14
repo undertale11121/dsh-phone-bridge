@@ -1723,14 +1723,41 @@ function isBridgeProcess(pid) {
 
 // 手机端只允许一个桥接实例：pid 文件 + 存活检查 + cmdline 校验，进程没了自动接管。
 function takeInstanceLock() {
+  const file = path.join(bridgeDir(), 'bridge.pid')
+  // 'wx' = 不存在才创建。两个进程同时抢时只有一个 openSync 能成功；
+  // 原来用 writeJson（临时文件 + rename）是「后写的赢」，两个都会以为自己是主。
+  const grab = () => {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    const fd = fs.openSync(file, 'wx')
+    try {
+      fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() }))
+    } finally {
+      fs.closeSync(fd)
+    }
+  }
+  const holderAlive = () => {
+    try {
+      const held = Number(readJson(file, {})?.pid || 0)
+      return Boolean(held && held !== process.pid && alive(held) && isBridgeProcess(held))
+    } catch {
+      return false
+    }
+  }
   try {
-    const file = path.join(bridgeDir(), 'bridge.pid')
-    const held = Number(readJson(file, {})?.pid || 0)
-    if (held && held !== process.pid && alive(held) && isBridgeProcess(held)) return false
-    writeJson(file, { pid: process.pid, at: Date.now() })
+    grab()
     return true
   } catch {
-    return true
+    if (holderAlive()) return false
+    // 僵尸锁（进程没了 / pid 被别的程序复用）：删掉再抢一次
+    try {
+      fs.unlinkSync(file)
+    } catch {}
+    try {
+      grab()
+      return true
+    } catch {
+      return false
+    }
   }
 }
 
