@@ -102,6 +102,22 @@ export function writeLinksFile(links) {
 
 // 手机模型习惯传短 id（0e47a423）；开关必须挂在完整的 session-<uuid> 上，
 // 否则守卫能过、投递却找不到会话。名字/标题也一并认。
+// 记下「这条回复已经被当场读走了」，宿主半的收件器就不会再投一遍。
+function markConsumed(rows) {
+  try {
+    const file = path.join(bridgeDir(), 'consumed.json')
+    const current = readJson(file, [])
+    const seqs = new Set((Array.isArray(current) ? current : []).map((n) => Number(n) || 0))
+    for (const row of rows || []) {
+      const seq = Number(row && row.seq)
+      if (seq) seqs.add(seq)
+    }
+    writeJson(file, [...seqs].filter(Boolean).sort((a, b) => a - b).slice(-300))
+  } catch {
+    // 记不下来最多多投一次，不值得让对话失败
+  }
+}
+
 export function resolveDesktopSessionId(raw) {
   const want = String(raw == null ? '' : raw).trim()
   if (!want) return ''
@@ -1707,7 +1723,10 @@ export async function runDesktopMcp() {
         const rows = (result.messages || []).filter(
           (message) => message.from !== 'desktop' && (to === 'all' || message.from === to || message.to === 'desktop'),
         )
-        if (rows.length) return formatThread({ messages: rows })
+        if (rows.length) {
+          markConsumed(rows)
+          return formatThread({ messages: rows })
+        }
         if (Date.now() >= deadline) break
       }
       return `已发出（第 ${row.seq} 条 → ${nameOf(to)}），${seconds} 秒内没有回话。\n\n${formatThread(threadRead(Math.max(0, row.seq - 3), 8))}`
@@ -1737,6 +1756,7 @@ export async function runDesktopMcp() {
 
 ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
       }
+      markConsumed(result && result.messages)
       return formatThread(result, { sinceSeq: row.seq })
     },
     async phone_read(args) {

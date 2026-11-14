@@ -878,11 +878,15 @@ async function wakeTick(agents) {
   // 接收方向不节流：这些本来就是该我看见的消息，压住只会让对话卡住。
 
   const skipped = []
+  // 已经被 agent_converse / peer_converse 当场读走的回复：同一个模型不该再看第二遍。
+  const consumed = new Set(
+    (readJson(path.join(bridgeDir(), 'consumed.json'), []) || []).map((n) => Number(n)),
+  )
   const incoming = (data.messages || []).filter((item) => {
     if (!item || item.from === 'desktop') return false
     // silent 行是文件变更日志：留在对话里给下次翻，但**不唤醒**。
     // 顺手把游标跨过去，否则每 3 秒都会把它们重读一遍。
-    if (item.silent === true) {
+    if (item.silent === true || consumed.has(Number(item.seq))) {
       skipped.push(Number(item.seq) || 0)
       return false
     }
