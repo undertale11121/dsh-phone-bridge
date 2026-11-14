@@ -1,0 +1,61 @@
+{
+  "name": "local-phone-bridge",
+  "version": "0.5.1",
+  "private": true,
+  "type": "module",
+  "main": "lib/index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "dsh": ">=0.2.1-rc.2 <0.3.0-0"
+  },
+  "dshGo": {
+    "v": 1,
+    "title": {
+      "zh": "互联",
+      "en": "Link"
+    },
+    "icon": "phone",
+    "wants": [
+      "clipboard",
+      "draft"
+    ],
+    "contributes": {
+      "composer.actions": [
+        {
+          "id": "bridge-connect",
+          "label": {
+            "zh": "连电脑",
+            "en": "Connect"
+          },
+          "icon": "link"
+        },
+        {
+          "id": "bridge-panel",
+          "label": {
+            "zh": "互联",
+            "en": "Link"
+          },
+          "icon": "phone"
+        }
+      ],
+      "panels": [
+        {
+          "id": "phone-bridge",
+          "title": {
+            "zh": "互联",
+            "en": "Link"
+          },
+          "icon": "phone",
+          "placement": [
+            "session.tab",
+            "features"
+          ]
+        }
+      ]
+    }
+  }
+}

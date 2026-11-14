@@ -1,0 +1,5 @@
+# 互联（phone-bridge）的桌面半：宿主路由 /phone-bridge/config 与 /phone-bridge/qr.svg，
+# 以及「插件」页上的卡片。MCP 那一半由 @deepseek-ai/dsh-mcp-client 的 phone-bridge 行提供。
+- insert:
+    - id: phone-bridge-web
+      name: dsh-phone-bridge-web

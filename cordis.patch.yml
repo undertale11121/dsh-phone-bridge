@@ -1,0 +1,12 @@
+# 互联（phone-bridge）的桌面半。
+#
+# 这个文件只插入 web 那一半：宿主路由 /phone-bridge/config、/phone-bridge/qr.svg，
+# 左栏的「互联」面板，以及「插件」详情页上的卡片。
+#
+# MCP 那一半（bridge.mjs 以 stdio 挂到 @deepseek-ai/dsh-mcp-client）不能写在这里：
+# 它的 args 必须是 bridge.mjs 的绝对路径，而这个路径只有装到目标机器上才知道。
+# web/index.js 首次加载时会自己把那一行补进 profile 的 cordis.patch.yml（幂等），
+# 所以这里不重复声明。
+- insert:
+    - id: phone-bridge-web
+      name: dsh-phone-bridge-web

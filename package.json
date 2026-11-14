@@ -1,0 +1,60 @@
+{
+  "name": "dsh-phone-bridge",
+  "version": "0.6.3",
+  "type": "module",
+  "description": "Cross-device bridge between a DSH desktop host and a dsh-go phone: the desktop model can drive the phone (screen, tap, open, shell, files) and both models can hand work to each other.",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "dsh-bundle",
+    "phone",
+    "remote",
+    "mcp",
+    "android",
+    "harness"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/undertale11121/dsh-phone-bridge.git"
+  },
+  "homepage": "https://github.com/undertale11121/dsh-phone-bridge#readme",
+  "bugs": {
+    "url": "https://github.com/undertale11121/dsh-phone-bridge/issues"
+  },
+  "workspaces": [
+    "web"
+  ],
+  "bin": {
+    "dsh-phone-bridge": "bridge.mjs"
+  },
+  "files": [
+    "bridge.mjs",
+    "src",
+    "web",
+    "scripts",
+    "dsh-go-plugin",
+    "cordis.patch.yml",
+    "LICENSE",
+    "README.md",
+    "NOTES.md"
+  ],
+  "scripts": {
+    "test": "node test/web.mjs",
+    "test:all": "node test/web.mjs && node test/auto.mjs && node test/pair.mjs && node test/qr.mjs",
+    "test:pair": "node test/pair.mjs",
+    "doctor": "node bridge.mjs doctor",
+    "patch": "node bridge.mjs print-patch",
+    "test:auto": "node test/auto.mjs",
+    "pack": "node scripts/pack.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "engines": {
+    "node": ">=20",
+    "dsh": ">=0.2.1-rc.2 <0.3.0-0"
+  }
+}

@@ -1,0 +1,126 @@
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: custom-apitogo
+    model: deepseek-v4-flash-vision-exp
+    rememberLastSelection: true
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      custom-apitogo:
+        displayName: APItogo
+        api: openai-completions
+        baseURL: https://api.apigoto.com/v1
+        apiKeyEnv: CUSTOM_APITOGO_API_KEY
+        models:
+          - id: MiniMax-M3.1-Flash-Preview
+          - id: claude-fable-5
+          - id: claude-fable-5-2
+          - id: claude-fable-5.1
+          - id: claude-haiku-4-5
+          - id: claude-haiku-5-5
+          - id: claude-opus-5
+          - id: claude-opus-5-5
+          - id: claude-sonnet-5
+          - id: claude-sonnet-5-5
+          - id: cogvideox-3
+          - id: deepseek-flash
+          - id: deepseek-v4-flash-vision-exp
+          - id: deepseek-v4-pro
+          - id: doubao-seed-2-0-mini-260428
+          - id: doubao-seed-2-0-pro-260215
+          - id: doubao-seed-2-1-lite-260915
+          - id: doubao-seed-2-1-pro-260915
+          - id: doubao-seed-2.1-turbo
+          - id: doubao-seed-evolving
+          - id: doubao-seedance-2-0-260128
+          - id: doubao-seedance-2-0-fast-260128
+          - id: doubao-seedance-2-5-260628
+          - id: doubao-seeduplex-3.0
+          - id: gemini-3.1-flash-image
+          - id: gemini-3.7-flash
+          - id: gemini-3.8-flash
+          - id: gemini-4-argon
+          - id: gemini-flash-lite-latest
+          - id: glm-4.6v-flash
+          - id: glm-5
+          - id: glm-5.1
+          - id: glm-5.2
+          - id: glm-5.3
+          - id: glm-5.3-flash
+          - id: gpt-5.6-terra
+          - id: gpt-6-astra
+          - id: gpt-6-luna
+          - id: gpt-6-sol
+          - id: gpt-6.1-sol
+          - id: gpt-6.1-terra
+          - id: gpt-image-1.5
+          - id: gpt-image-2
+          - id: gpt-image-2.5-flare
+          - id: gpt-image-2.6-flare
+          - id: gpt-image-2.6-sunburst
+          - id: grok-4.20-non-reasoning
+          - id: grok-4.20-reasoning
+          - id: grok-4.6
+          - id: grok-4.7
+          - id: grok-build-0.1
+          - id: grok-code-fast-1
+          - id: grok-imagine-image
+          - id: grok-imagine-image-2.0
+          - id: grok-imagine-image-quality
+          - id: grok-imagine-video
+          - id: grok-imagine-video-1.5
+          - id: grok-imagine-video-1.5-lite
+          - id: grok-voice-transcribe-2.0
+          - id: happyhorse-1.1-i2v
+          - id: happyhorse-1.1-r2v
+          - id: happyhorse-1.1-t2v
+          - id: hy4
+          - id: jimeng-marketing-video
+          - id: jimeng-t2i-3.0
+          - id: jimeng-t2i-3.1
+          - id: jimeng-video-3.0
+          - id: jimeng-video-3.0-1080p
+          - id: kimi-k2.7-code
+          - id: kimi-k2.7-code-highspeed
+          - id: kimi-k3
+          - id: kimi-k3.1-pro
+          - id: kimi-k3.1-pro-highspeed
+          - id: kling-v3-omni
+          - id: kling-v4
+          - id: kling-v4-flash
+          - id: mimo-v2.5-asr
+          - id: mimo-v2.5-tts
+          - id: mimo-v2.5-tts-voiceclone
+          - id: mimo-v2.5-tts-voicedesign
+          - id: mimo-v2.6-flash
+          - id: mimo-v2.6-pro
+          - id: minimax-h3
+          - id: minimax-h3-max
+          - id: minimax-hailuo-02
+          - id: minimax-hailuo-2.3
+          - id: minimax-m2
+          - id: minimax-m2.1
+          - id: minimax-m2.1-highspeed
+          - id: minimax-m2.5
+          - id: minimax-m2.5-highspeed
+          - id: minimax-m2.7
+          - id: minimax-m2.7-highspeed
+          - id: minimax-m3
+          - id: minimax-m3.1-flash
+          - id: qwen-image-2.0-pro
+          - id: qwen-image-3.0
+          - id: qwen3.7-max
+          - id: qwen3.7-plus
+          - id: qwen3.8-flash
+          - id: qwen3.8-max
+          - id: speech-2.8-hd
+          - id: speech-2.8-turbo
+          - id: swe-1.6-fast
+          - id: swe-1.7-lightning
+          - id: swe-2
+          - id: wan3.0-video
+          - id: wan3.0-video-prime
+- id: credentials
+  disabled: false

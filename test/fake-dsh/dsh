@@ -1,0 +1,5 @@
+#!/bin/sh
+# Stand-in for the real `dsh` CLI in tests: records its argv on one line and
+# prints one NDJSON final event, so session reuse can be checked without a model.
+{ printf '%s' "$*" | tr '\n' ' '; echo; } >> "$FAKE_DSH_LOG"
+printf '%s\n' '{"type":"final","sessionId":"sess-from-fake","text":"手机模型收到并完成","reason":{"kind":"completed"}}'

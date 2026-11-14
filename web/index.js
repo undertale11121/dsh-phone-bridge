@@ -1,0 +1,691 @@
+// Host half of the desktop UI: one route the card on the Plugins page reads and
+// writes. Self-contained on purpose — the card ships as its own bundle, gets
+// copied into the profile's node_modules, and must never import ../src/*: the
+// engine side lives in the phone-bridge folder the MCP row points at.
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import crypto from 'node:crypto'
+import { spawn } from 'node:child_process'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+
+export const name = 'phone-bridge-web'
+
+const MAX_BODY = 32 * 1024
+const TOGGLES = ['allowShell', 'allowAsk', 'allowFiles', 'allowTest']
+
+export function dshHome() {
+  if (process.env.DSH_HOME) return path.resolve(process.env.DSH_HOME)
+  return path.join(os.homedir(), '.dsh')
+}
+
+export function bridgeDir() {
+  return path.join(dshHome(), 'phone-bridge')
+}
+
+const configPath = () => path.join(bridgeDir(), 'desktop.json')
+const lockPath = () => path.join(bridgeDir(), 'desktop.lock')
+const logPath = () => path.join(bridgeDir(), 'bridge.log')
+
+function readJson(file, fallback) {
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'))
+  } catch {
+    return fallback
+  }
+}
+
+function writeJson(file, value) {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  const temp = `${file}.${process.pid}.tmp`
+  fs.writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 })
+  fs.renameSync(temp, file)
+}
+
+function defaults() {
+  return {
+    token: '',
+    port: 8787,
+    host: '0.0.0.0',
+    name: os.hostname(),
+    allowShell: true,
+    allowAsk: true,
+    allowFiles: true,
+    allowTest: true,
+    devices: [],
+    peers: [],
+    bridge: '',
+    toolTimeoutMs: 1800000,
+  }
+}
+
+export function readConfig() {
+  const existing = readJson(configPath(), null)
+  const config = existing && existing.token ? { ...defaults(), ...existing } : { ...defaults(), token: crypto.randomBytes(16).toString('hex') }
+  if (!existing || !existing.token) writeJson(configPath(), config)
+  if (process.env.PHONE_BRIDGE_PORT) config.port = Number(process.env.PHONE_BRIDGE_PORT)
+  if (process.env.PHONE_BRIDGE_BIN && !config.bridge) config.bridge = process.env.PHONE_BRIDGE_BIN
+  return config
+}
+
+function readLogTail(maxLines = 8) {
+  try {
+    const text = fs.readFileSync(logPath(), 'utf8')
+    return text.trimEnd().split('\n').slice(-maxLines)
+  } catch {
+    return []
+  }
+}
+
+async function probe(port, timeoutMs = 1500) {
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(timeoutMs) })
+    if (!res.ok) return null
+    return await res.json()
+  } catch {
+    return null
+  }
+}
+
+function pidAlive(pid) {
+  if (!pid) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function ensureServer(config) {
+  const running = await probe(config.port, 800)
+  if (running?.ok) {
+    const lock = readJson(lockPath(), null)
+    return { pid: lock?.pid || 0, port: config.port, pairing: running.pairing || [] }
+  }
+  const lock = readJson(lockPath(), null)
+  if (lock?.port && pidAlive(lock.pid) && (await probe(lock.port, 800))?.ok) return { pid: lock.pid, port: lock.port, pairing: lock.pairing || [] }
+  const bridge = config.bridge
+  if (!bridge || !fs.existsSync(bridge)) {
+    throw new Error('还没找到 bridge.mjs（先在电脑的 DSH 里跑一次 bridge_start，或手动执行 node bridge.mjs desktop --serve）')
+  }
+  fs.mkdirSync(bridgeDir(), { recursive: true })
+  const child = spawn(process.execPath, [bridge, 'desktop', '--serve', '--port', String(config.port)], {
+    detached: true,
+    stdio: 'ignore',
+    cwd: path.dirname(bridge),
+    env: { ...process.env, PHONE_BRIDGE_LOG: logPath() },
+  })
+  child.unref()
+  for (let i = 0; i < 40; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    const health = await probe(config.port, 600)
+    if (health?.ok) return { pid: child.pid, port: config.port, pairing: health.pairing || [] }
+  }
+  throw new Error(`后台桥接没能在 8 秒内启动，看日志：${logPath()}`)
+}
+
+// The same bundle can be installed on either machine. On the phone the useful
+// controls live in the App's native panel, so the card says so instead of
+// offering desktop toggles that would mean nothing there.
+export function isPhone() {
+  if (process.env.PHONE_BRIDGE_ROLE) return process.env.PHONE_BRIDGE_ROLE === 'phone'
+  return fs.existsSync('/opt/dsh-app/phone/relay.cjs') || fs.existsSync('/var/lib/dsh-app/phone/bridge.json') || fs.existsSync('/sdcard')
+}
+
+// First non-internal IPv4, i.e. the address the phone has to dial.
+function lanAddresses() {
+  const out = []
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const item of list || []) {
+      if (item && !item.internal && item.family === 'IPv4' && !item.address.startsWith('169.254.')) out.push(item.address)
+    }
+  }
+  return out
+}
+
+function fallbackPairUrl(config) {
+  const [first] = lanAddresses()
+  return `http://${first || '127.0.0.1'}:${config.port}/pair?t=${config.token}`
+}
+
+// The QR encoder lives with the engine half (src/qr.mjs); the bundle finds it
+// through the bridge path the engine writes into desktop.json.
+async function qrSvgFor(config, text) {
+  const bridge = config.bridge
+  if (!bridge) throw new Error('还没记录 bridge.mjs 路径，先启动一次桥接')
+  const file = path.join(path.dirname(bridge), 'src', 'qr.mjs')
+  if (!fs.existsSync(file)) throw new Error(`找不到 ${file}`)
+  const { qrSvg } = await import(pathToFileURL(file).href)
+  return qrSvg(text, { margin: 3, label: '配对手机' })
+}
+
+function readThread(limit = 4) {
+  try {
+    const file = path.join(path.dirname(configPath()), 'thread.jsonl')
+    const rows = fs
+      .readFileSync(file, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+      .filter((row) => row && typeof row.text === 'string')
+    return { total: rows.length, messages: rows.slice(-limit) }
+  } catch {
+    return { total: 0, messages: [] }
+  }
+}
+
+// sessions.json: one dedicated phone session per project, keyed by session name.
+// A missing or broken file simply means "no work dispatched yet".
+function readSessions() {
+  const rows = readJson(path.join(bridgeDir(), 'sessions.json'), {})
+  if (!rows || typeof rows !== 'object' || Array.isArray(rows)) return []
+  return Object.entries(rows)
+    .filter(([, item]) => item && typeof item === 'object')
+    .map(([name, item]) => ({
+      name,
+      sessionId: String(item.sessionId || '').slice(0, 8),
+      at: item.at || '',
+      title: item.title || '',
+    }))
+}
+
+// agents.json: the agents the phone may talk to. src/agents.mjs keeps it as
+// `{ agents: [...] }`; a bare array is accepted too so a hand-written file
+// still shows up. Only the fields the card needs survive.
+function readAgents() {
+  const data = readJson(path.join(bridgeDir(), 'agents.json'), [])
+  const rows = Array.isArray(data) ? data : Array.isArray(data?.agents) ? data.agents : []
+  return rows
+    .filter((item) => item && typeof item === 'object')
+    .map((item) => ({
+      id: String(item.id || ''),
+      name: item.name || 'agent',
+      host: item.host === 'phone' ? 'phone' : 'desktop',
+      kind: item.kind === 'subagent' ? 'subagent' : 'model',
+      // The file records a pid, not liveness, for subagents it started.
+      running: typeof item.running === 'boolean' ? item.running : pidAlive(item.pid),
+    }))
+}
+
+async function snapshot() {
+  const config = readConfig()
+  let background = null
+  let error = ''
+  try {
+    background = await ensureServer(config)
+  } catch (err) {
+    error = String(err?.message || err)
+  }
+  const health = await probe(background?.port || config.port)
+  const lock = readJson(lockPath(), null)
+  return {
+    role: isPhone() ? 'phone' : 'desktop',
+    online: Boolean(health?.online),
+    device: health?.device || null,
+    port: health?.port || background?.port || config.port,
+    listen: `${config.host}:${config.port}`,
+    background: background ? { pid: background.pid, port: background.port } : null,
+    pairing: health?.pairing?.length ? health.pairing : Array.isArray(lock?.pairing) ? lock.pairing : [],
+    pairUrl: health?.pairUrl || (config.token ? fallbackPairUrl(config) : ''),
+    workbenchUrl: health?.workbenchUrl || '',
+    permitLeft: Number(health?.permitLeft || 0),
+    pendingPair: health?.pendingPair || null,
+    code: Number(health?.codeLeft || 0) > 0 ? '' : '',
+    thread: readThread(4).messages,
+    toggles: Object.fromEntries(TOGGLES.map((key) => [key, config[key] !== false])),
+    devices: (config.devices || []).map((item) => ({
+      id: String(item.id || '').slice(0, 8),
+      name: item.name || '手机',
+      platform: item.platform || '',
+      at: item.at || '',
+    })),
+    sessions: readSessions(),
+    wake: {
+      ...readWake(config),
+      ...readWakeState(),
+      ready: Boolean(agentsRef),
+      target: readWake(config).sessionId || readActive()?.sessionId || '',
+      targetName: (() => {
+        const id = readWake(config).sessionId || readActive()?.sessionId || ''
+        const row = sessionRows().find((item) => item.id === id)
+        return row ? row.name : ''
+      })(),
+      active: readActive(),
+    },
+    // 会话目录：模型可以按用途挑唤醒对象（peer_say 的 to 写 desktop:<名字>）
+    registry: sessionRows(),
+    agents: readAgents(),
+    log: readLogTail(8),
+    configPath: configPath(),
+    error,
+  }
+}
+
+async function runAction(body) {
+  const config = readConfig()
+  if (body.action === 'toggle') {
+    const key = String(body.key || '')
+    if (!TOGGLES.includes(key)) throw new Error('不认识的开关')
+    config[key] = Boolean(body.value)
+    writeJson(configPath(), config)
+    return { text: `已${config[key] ? '允许' : '关闭'} ${key}` }
+  }
+  if (body.action === 'token') {
+    config.token = crypto.randomBytes(16).toString('hex')
+    writeJson(configPath(), config)
+    return { text: '已换新配对串；登记过的手机仍会用设备密钥重连' }
+  }
+  if (body.action === 'permit' || body.action === 'code') {
+    const info = await ensureServer(config)
+    const res = await fetch(`http://127.0.0.1:${info.port}/${body.action}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+      signal: AbortSignal.timeout(4000),
+    })
+    const data = await res.json()
+    if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`)
+    if (body.action === 'permit') return { text: `配对窗口已打开，${Math.round((data.permitLeft || 0) / 1000)} 秒内手机可以直接连上` }
+    return { text: `配对码：${data.code}（2 分钟内有效）`, code: data.code }
+  }
+  if (body.action === 'approve' || body.action === 'deny') {
+    const info = await ensureServer(config)
+    const res = await fetch(`http://127.0.0.1:${info.port}/pair/${body.action}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{}',
+      signal: AbortSignal.timeout(4000),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || data.ok === false) throw new Error(data?.error || `HTTP ${res.status}`)
+    if (body.action === 'approve') return { text: `已允许 ${data?.device?.name || '这台手机'} 连接` }
+    return { text: '已拒绝这次配对请求' }
+  }
+  if (body.action === 'wake') {
+    const wake = readWake(config)
+    if (typeof body.enabled === 'boolean') wake.enabled = body.enabled
+    if (typeof body.sessionId === 'string') wake.sessionId = body.sessionId.trim()
+    if (body.mode === 'steer' || body.mode === 'queue') wake.mode = body.mode
+    config.wake = wake
+    writeJson(configPath(), config)
+    if (typeof body.text === 'string' && body.text.trim()) {
+      const agents = wakeAgents()
+      if (!agents) return { text: '设置已保存；引擎里还没挂上 agents 服务，等一会儿再试' }
+      const target = wake.sessionId || readActive()?.sessionId || ''
+      if (!target) throw new Error('还没有模型调用过互联工具，所以不知道唤哪个会话；让电脑模型用一次 peer_info 再试')
+      const result = await wakeSession(agents, target, body.text.trim(), wake.mode)
+      const state = readWakeState()
+      state.lastWake = result
+      state.lastError = ''
+      writeWakeState(state)
+      return { text: `已把消息投进会话 ${target.slice(0, 8)}…（${result.mode}）` }
+    }
+    const auto = wake.sessionId || readActive()?.sessionId || ''
+    return { text: `唤醒：${wake.enabled ? '开' : '关'}${auto ? `，会话 ${auto.slice(0, 8)}…` : '，还没记录到会话'}` }
+  }
+  if (body.action === 'start') {
+    const info = await ensureServer(config)
+    return { text: `后台服务在跑：pid ${info.pid}，端口 ${info.port}` }
+  }
+  throw new Error(`不认识的操作：${body.action}`)
+}
+
+const WAKE_DEFAULTS = { enabled: false, sessionId: '', mode: 'queue' }
+
+let agentsRef = null
+
+const wakeAgents = () => agentsRef
+
+const wakeStatePath = () => path.join(bridgeDir(), 'wake-state.json')
+const activePath = () => path.join(bridgeDir(), 'active.json')
+const registryPath = () => path.join(bridgeDir(), 'registry.json')
+
+// 会话目录（src/sessions.mjs 维护）。插件是自包含的，所以这里自己读同一份 JSON。
+function readRegistry() {
+  const value = readJson(registryPath(), null)
+  return value && value.sessions ? value : { sessions: {} }
+}
+
+function sessionRows() {
+  const active = readActive()?.sessionId || ''
+  return Object.values(readRegistry().sessions || {})
+    .map((row) => ({
+      id: row.id,
+      short: String(row.id).slice(0, 8),
+      name: row.name || '',
+      purpose: row.purpose || '',
+      project: row.project || '',
+      calls: row.calls || 0,
+      at: row.ast || row.at || '',
+      active: row.id === active,
+    }))
+    .sort((a, b) => String(b.at).localeCompare(String(a.at)))
+}
+
+// "登录页" / "3f9a2b1c" / 用途里的词 → 一个会话
+export function resolveNamed(name) {
+  const wanted = String(name || '').trim().toLowerCase()
+  if (!wanted) return null
+  const rows = sessionRows()
+  return (
+    rows.find((row) => String(row.name).toLowerCase() === wanted) ||
+    rows.find((row) => String(row.short).startsWith(wanted) || String(row.id).startsWith(wanted)) ||
+    rows.find((row) => String(row.purpose).toLowerCase().includes(wanted)) ||
+    null
+  )
+}
+
+function readActive() {
+  const value = readJson(activePath(), null)
+  return value && value.sessionId ? value : null
+}
+
+function readWake(config = readConfig()) {
+  return { ...WAKE_DEFAULTS, ...(config.wake || {}) }
+}
+
+function readWakeState() {
+  const state = readJson(wakeStatePath(), {})
+  return {
+    cursor: Number(state.cursor || 0),
+    lastWake: state.lastWake || null,
+    lastError: String(state.lastError || ''),
+  }
+}
+
+function writeWakeState(value) {
+  writeJson(wakeStatePath(), value)
+}
+
+/**
+ * Deliver one user message into a live Session through the engine's own agent
+ * service, the same path the Web UI uses.
+ */
+export async function wakeSession(agents, sessionId, text, mode = 'queue') {
+  const agent = agents?.get?.(sessionId)
+  if (!agent) {
+    throw new Error(`会话 ${String(sessionId).slice(0, 8)}… 没开在引擎里；先用 DSH 打开它，或用 phone_ask 的 session 参数继续`)
+  }
+  const message = {
+    id: crypto.randomUUID(),
+    role: 'user',
+    content: [{ type: 'text', text }],
+    source: { kind: 'user', rpcId: `phone-bridge-${crypto.randomUUID()}` },
+  }
+  if (mode === 'steer' && typeof agent.steer === 'function') agent.steer(message)
+  else agent.followup(message)
+  return { sessionId, mode: mode === 'steer' ? 'steer' : 'queue', preview: String(text).slice(0, 120), at: new Date().toISOString() }
+}
+
+async function threadSince(config, since) {
+  const auth = Buffer.from(JSON.stringify({ k: 'token', token: config.token })).toString('base64url')
+  const res = await fetch(`http://127.0.0.1:${config.port}/thread?since=${since}&limit=50&auth=${auth}`, {
+    signal: AbortSignal.timeout(2500),
+  })
+  if (!res.ok) throw new Error(`工作台读不到（HTTP ${res.status}）`)
+  return await res.json()
+}
+
+async function wakeTick(agents) {
+  const config = readConfig()
+  const wake = readWake(config)
+  const state = readWakeState()
+  const target = wake.sessionId || readActive()?.sessionId || ''
+  if (!wake.enabled || !config.token) return
+  let data
+  try {
+    data = await threadSince(config, state.cursor)
+  } catch (error) {
+    const message = String(error?.message || error)
+    if (message !== state.lastError) {
+      state.lastError = message
+      writeWakeState(state)
+    }
+    return
+  }
+  const incoming = (data.messages || []).filter(
+    (item) => item && item.from !== 'desktop' && (item.to === 'desktop' || String(item.to || '').startsWith('desktop:')),
+  )
+  state.cursor = Number(data.next || state.cursor)
+  for (const item of incoming) {
+    // 收件人写了名字（desktop:登录页）就投给那个会话，否则投给最近用过互联的会话
+    const named = String(item.to || '').startsWith('desktop:') ? String(item.to).slice('desktop:'.length) : ''
+    let sessionId = target
+    if (named) {
+      const row = resolveNamed(named)
+      if (!row) {
+        state.lastError = `找不到会话「${named}」，消息留在工作台上`
+        continue
+      }
+      sessionId = row.id
+    }
+    if (!sessionId) {
+      state.lastError = '还不知道该唤醒哪个会话：让电脑模型用一次互联工具，或在手机上写 desktop:<会话名>'
+      continue
+    }
+    const text = `【来自${item.from === 'phone' ? '手机模型' : item.from}的消息】\n${item.text}`
+    try {
+      state.lastWake = await wakeSession(agents, sessionId, text, wake.mode)
+      state.lastError = ''
+    } catch (error) {
+      state.lastError = String(error?.message || error)
+    }
+  }
+  writeWakeState(state)
+}
+
+function installWake(ctx) {
+  if (typeof ctx.inject !== 'function') return
+  ctx.inject(['agents'], (scope) => {
+    agentsRef = scope.agents
+    const start = () => {
+      let busy = false
+      const timer = setInterval(() => {
+        if (busy) return
+        busy = true
+        wakeTick(scope.agents)
+          .catch(() => {})
+          .finally(() => {
+            busy = false
+          })
+      }, 3000)
+      timer.unref?.()
+      return () => clearInterval(timer)
+    }
+    try {
+      if (typeof scope.effect === 'function') scope.effect(start, 'phone-bridge: wake poller')
+      else start()
+    } catch (error) {
+      console.error(`[phone-bridge] wake poller skipped: ${error}`)
+    }
+  })
+}
+
+// ── 引擎半自注册 ─────────────────────────────────────────────────────────────
+// 从市场装的只是这个 bundle：宿主路由、左栏面板、插件卡片。真正干活的
+// bridge.mjs 要以 stdio 挂给 @deepseek-ai/dsh-mcp-client，而那一行的 args 必须
+// 是装到目标机器之后才知道的绝对路径——装包的人不可能预先填对。
+// 所以第一次加载时自己补：找到装了本 bundle 的 profile，往它的 cordis.patch.yml
+// 追加一行（幂等，写前备份）。补完要重启一次 DSH，下一轮启动 mcp-client 才会
+// 把工具挂上来。不想被自动改就设 PHONE_BRIDGE_NO_AUTOPATCH=1。
+
+const ENGINE_ENTRY_ID = 'dsh-phone-bridge'
+const ENGINE_CLIENT = '@deepseek-ai/dsh-mcp-client'
+const AUTOPATCH_ENV = 'PHONE_BRIDGE_NO_AUTOPATCH'
+
+/** bridge.mjs 在哪：npm 装到包根、bundle 自带、或旧版 ~/.dsh/phone-bridge/。 */
+export function enginePath() {
+  const here = path.dirname(fileURLToPath(import.meta.url))
+  const candidates = [
+    process.env.PHONE_BRIDGE_ENGINE,
+    path.join(here, '..', 'bridge.mjs'),
+    path.join(here, 'bridge.mjs'),
+    path.join(bridgeDir(), 'bridge.mjs'),
+  ]
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    try {
+      if (fs.statSync(candidate).isFile()) return path.resolve(candidate)
+    } catch {}
+  }
+  return null
+}
+
+function enginePatch(engine) {
+  const quoted = `'${engine.replace(/'/g, "''")}'`
+  return [
+    '',
+    '# ↓ 互联（phone-bridge）的引擎半：bridge.mjs 以 stdio 挂给 mcp-client。',
+    '#   这一行由 web/index.js 首次加载时自动追加；删掉它，桥接工具就没了。',
+    '- insert:',
+    `    - id: ${ENGINE_ENTRY_ID}`,
+    `      name: '${ENGINE_CLIENT}'`,
+    '      config:',
+    '        serverName: phone-bridge',
+    '        transport: stdio',
+    '        command: !!js process.execPath',
+    '        args:',
+    `          - ${quoted}`,
+    '          - auto',
+    '        toolCallTimeoutMs: 1800000',
+    '        failOnStartupError: false',
+    '        # 让桥接知道是哪个会话在调用它（自动唤醒要用）',
+    '        dshGoPhoneCaller: true',
+    '',
+  ].join('\n')
+}
+
+const ENGINE_ROW = new RegExp(`(^|\\n)\\s*-?\\s*id:\\s*['"]?${ENGINE_ENTRY_ID}['"]?\\s*$`, 'm')
+
+/** 哪些 profile 装了本 bundle：bundles 列表里有它，或补丁里提到了它。 */
+function profilesWithThisBundle() {
+  const found = []
+  const root = path.join(dshHome(), 'profiles')
+  let entries = []
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true })
+  } catch {
+    return found
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    const dir = path.join(root, entry.name)
+    const bundles = readJson(path.join(dir, 'package.json'), null)?.dsh?.profile?.bundles
+    const patchFile = path.join(dir, 'cordis.patch.yml')
+    let patch = ''
+    try {
+      patch = fs.readFileSync(patchFile, 'utf8')
+    } catch {
+      continue
+    }
+    const listed = Array.isArray(bundles) && bundles.includes('dsh-phone-bridge-web')
+    if (listed || /dsh-phone-bridge-web/.test(patch)) found.push({ patchFile, patch })
+  }
+  return found
+}
+
+/** 幂等地把引擎行补进每个装了本 bundle 的 profile，返回改过的文件。 */
+export function installEngineRow() {
+  if (process.env[AUTOPATCH_ENV] === '1') return []
+  const engine = enginePath()
+  if (!engine) return []
+  const touched = []
+  for (const profile of profilesWithThisBundle()) {
+    if (ENGINE_ROW.test(profile.patch)) continue
+    try {
+      try {
+        fs.copyFileSync(profile.patchFile, `${profile.patchFile}.bak-autopatch`)
+      } catch {}
+      const next = `${profile.patch.replace(/\s*$/, '')}\n${enginePatch(engine)}`
+      const temp = `${profile.patchFile}.${process.pid}.tmp`
+      fs.writeFileSync(temp, next)
+      fs.renameSync(temp, profile.patchFile)
+      touched.push(profile.patchFile)
+      console.log(`[phone-bridge] 已把引擎行补进 ${profile.patchFile}（重启 DSH 后生效）`)
+    } catch (error) {
+      console.error(`[phone-bridge] 引擎行没写进 ${profile.patchFile}: ${error?.message || error}`)
+    }
+  }
+  return touched
+}
+
+function send(res, status, body) {
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+  res.end(JSON.stringify(body))
+}
+
+async function readJsonBody(req) {
+  const chunks = []
+  let total = 0
+  for await (const chunk of req) {
+    total += chunk.length
+    if (total > MAX_BODY) throw new Error('请求太大')
+    chunks.push(chunk)
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+}
+
+export function apply(ctx) {
+  // webServer exists only under the web profile, and cordis has no optional
+  // inject form, so the route rides a scoped inject of its own.
+  if (typeof ctx.inject !== 'function') return
+  const route = {
+    name: 'phone-bridge-config',
+    kind: 'exact',
+    path: '/phone-bridge/config',
+    handler: async (req, res) => {
+      try {
+        if (req.method === 'GET' || req.method === 'HEAD') {
+          send(res, 200, await snapshot())
+          return
+        }
+        if (req.method !== 'POST') {
+          send(res, 405, { error: '只支持 GET / POST' })
+          return
+        }
+        const body = await readJsonBody(req)
+        const result = await runAction(body)
+        send(res, 200, { ok: true, text: result.text, state: await snapshot() })
+      } catch (error) {
+        send(res, 400, { ok: false, error: String(error?.message || error) })
+      }
+    },
+  }
+  const qrRoute = {
+    name: 'phone-bridge-qr',
+    kind: 'exact',
+    path: '/phone-bridge/qr.svg',
+    handler: async (req, res) => {
+      try {
+        const config = readConfig()
+        const health = await probe(config.port, 1200)
+        const text = health?.pairUrl || fallbackPairUrl(config)
+        const svg = await qrSvgFor(config, text)
+        res.writeHead(200, { 'content-type': 'image/svg+xml; charset=utf-8', 'cache-control': 'no-store' })
+        res.end(svg)
+      } catch (error) {
+        res.writeHead(503, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ error: String(error?.message || error) }))
+      }
+    },
+  }
+  installWake(ctx)
+  try {
+    installEngineRow()
+  } catch (error) {
+    console.error(`[phone-bridge] 引擎行自注册跳过: ${error}`)
+  }
+  ctx.inject(['webServer'], (scope) => {
+    const register = () => {
+      scope.webServer.register(route)
+      scope.webServer.register(qrRoute)
+    }
+    try {
+      if (typeof scope.effect === 'function') scope.effect(register, 'phone-bridge: config routes')
+      else register()
+    } catch (error) {
+      console.error(`[phone-bridge] config route skipped: ${error}`)
+    }
+  })
+}

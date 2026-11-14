@@ -1,0 +1,23 @@
+# 运行时产物
+bridge.log
+bridge.log.*
+desktop.json
+desktop.lock
+wake-state.json
+phone.json
+
+# 测试临时 DSH_HOME
+test/home-*/
+
+# 本地备份
+backups/
+*.bak-*
+*.bak
+test/*.orig
+
+# 打包/探查残留
+.pkg-inspect/
+node_modules/
+*.tgz
+.DS_Store
+Thumbs.db

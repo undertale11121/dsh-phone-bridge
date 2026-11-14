@@ -1,0 +1,258 @@
+// Checks for the desktop-UI bundle (web/): the host route on its own, then the
+// browser half loaded the way the engine loads it (__ModuleLoader__ + a lazy
+// CJS factory), with React replaced by a tiny recorder. No browser needed.
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { pathToFileURL } from 'node:url'
+
+const root = path.resolve(import.meta.dirname, '..')
+const home = fs.mkdtempSync(path.join(os.tmpdir(), 'phone-bridge-web-'))
+process.env.DSH_HOME = home
+process.env.PHONE_BRIDGE_PORT = '8793'
+process.env.PHONE_BRIDGE_ROLE = 'desktop'
+delete process.env.PHONE_BRIDGE_SETUP_PORT
+
+let pass = 0
+let fail = 0
+function check(name, ok, detail = '') {
+  if (ok) {
+    pass += 1
+    console.log(`  ✓ ${name}`)
+  } else {
+    fail += 1
+    console.log(`  ✗ ${name}${detail ? ` — ${detail}` : ''}`)
+  }
+}
+
+// ── host half ────────────────────────────────────────────────────────────────
+const registered = []
+const effects = []
+const scope = {
+  webServer: { register(route) { registered.push(route); return () => {} } },
+  effect(fn) { effects.push(fn); return () => {} },
+}
+const wokenMessages = []
+const fakeAgents = { get: (id) => (id === 'sess-active-9' ? { followup: (m) => wokenMessages.push(m), steer: (m) => wokenMessages.push(m) } : undefined) }
+const host = await import(pathToFileURL(path.join(root, 'web', 'index.js')).href)
+host.apply({
+  inject(names, fn) {
+    fn(names.includes('agents') ? { ...scope, agents: fakeAgents } : scope)
+  },
+  effect(fn) { effects.push(fn) },
+})
+effects.forEach((fn) => fn())
+check('注册了配置与二维码路由', registered.length === 2 && registered[0].path === '/phone-bridge/config' && registered[1].path === '/phone-bridge/qr.svg', JSON.stringify(registered.map((r) => r.path)))
+const route = registered[0]
+const qrRoute = registered[1]
+
+function response() {
+  return { status: 0, body: '', writeHead(status) { this.status = status }, end(body) { this.body = body } }
+}
+async function get() {
+  const res = response()
+  await route.handler({ method: 'GET', headers: {} }, res)
+  return { res, data: JSON.parse(res.body) }
+}
+async function post(body) {
+  const res = response()
+  const req = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(body)) } }
+  await route.handler(req, res)
+  return { res, data: JSON.parse(res.body) }
+}
+
+const first = await get()
+check('GET 200', first.res.status === 200, String(first.res.status))
+check('payload 形状', ['role', 'online', 'device', 'port', 'listen', 'pairing', 'pairUrl', 'toggles', 'devices', 'log'].every((key) => key in first.data), Object.keys(first.data).join(','))
+check('role=desktop', first.data.role === 'desktop')
+check('listen 有值', /:\d+$/.test(first.data.listen), first.data.listen)
+check('四个开关都在', ['allowShell', 'allowAsk', 'allowFiles', 'allowTest'].every((key) => typeof first.data.toggles[key] === 'boolean'))
+check('没找到 bridge.mjs 时给明确提示', /还没找到 bridge\.mjs/.test(first.data.error || ''), first.data.error)
+
+// Without a recorded bridge path the card cannot render the code yet, and the
+// route says why instead of showing a broken image.
+const qrMissing = response()
+await qrRoute.handler({ method: 'GET', headers: {} }, qrMissing)
+check('没记录 bridge 路径时二维码给出原因', qrMissing.status === 503 && /bridge\.mjs/.test(qrMissing.body), qrMissing.body)
+
+const configFile = path.join(home, 'phone-bridge', 'desktop.json')
+const stashed = JSON.parse(fs.readFileSync(configFile, 'utf8'))
+fs.writeFileSync(configFile, JSON.stringify({ ...stashed, bridge: path.join(root, 'bridge.mjs') }))
+const qrOk = response()
+await qrRoute.handler({ method: 'GET', headers: {} }, qrOk)
+check('二维码返回 SVG', qrOk.status === 200 && String(qrOk.body).startsWith('<svg'), `${String(qrOk.body).slice(0, 12)}… ${String(qrOk.body).length} 字节`)
+fs.writeFileSync(configFile, JSON.stringify(stashed))
+
+const off = await post({ action: 'toggle', key: 'allowShell', value: false })
+check('关闭 allowShell 返回 ok', off.res.status === 200 && off.data.ok === true)
+check('开关落盘', JSON.parse(fs.readFileSync(path.join(home, 'phone-bridge', 'desktop.json'), 'utf8')).allowShell === false)
+const on = await post({ action: 'toggle', key: 'allowShell', value: true })
+check('开关可以开回来', JSON.parse(fs.readFileSync(path.join(home, 'phone-bridge', 'desktop.json'), 'utf8')).allowShell === true)
+const token = await post({ action: 'token' })
+check('换配对串', token.data.ok === true && JSON.parse(fs.readFileSync(path.join(home, 'phone-bridge', 'desktop.json'), 'utf8')).token.length >= 16)
+process.env.PHONE_BRIDGE_ROLE = 'phone'
+const asPhone = await get()
+check('手机上标成 phone', asPhone.data.role === 'phone')
+process.env.PHONE_BRIDGE_ROLE = 'desktop'
+const bad = await post({ action: 'nope' })
+check('未知动作 400', bad.res.status === 400 && bad.data.ok === false)
+const wrong = await post({ action: 'toggle', key: 'allowRoot', value: true })
+check('未知开关 400', wrong.res.status === 400, wrong.res.body)
+
+// ── browser half ─────────────────────────────────────────────────────────────
+const source = fs.readFileSync(path.join(root, 'web', 'client.js'), 'utf8')
+let loaded = null
+const fakeWindow = { __ModuleLoader__: { load(definition) { loaded = definition } } }
+new Function('window', source)(fakeWindow)
+check('客户端 bundle 调用 __ModuleLoader__.load', Boolean(loaded) && loaded.id === 'dsh-phone-bridge-web')
+
+const tree = []
+const fakeDocument = { documentElement: { lang: 'zh-CN' } }
+const React = {
+  createElement(type, props, ...children) {
+    const node = { type, props: props || {}, children: children.flat(9).filter((child) => child !== null && child !== undefined && child !== false) }
+    tree.push(node)
+    return node
+  },
+  useState(value) { return [value, () => {}] },
+  useEffect() {},
+  useCallback(fn) { return fn },
+  useMemo(fn) { return fn() },
+}
+const slotsSeen = []
+let slotsDepth = 0
+const ctx = {
+  inject(names, fn) {
+    if (names.includes('locale')) fn({ locale: { get: () => 'zh' } })
+    if (names.includes('slots')) {
+      fn({
+        slots: {
+          inject(_name, generator) {
+            // 宿主每个 inject 各开一个 generator，各自 yield 一份注册；
+            // 这里把整条 generator 跑完，才收得到全部槽位。
+            const iterator = generator()
+            let last
+            for (let step = iterator.next(); !step.done; step = iterator.next()) last = step.value
+            return last
+          },
+          register(descriptor, component) {
+            slotsSeen.push({ descriptor, component })
+            return null
+          },
+        },
+      })
+    }
+  },
+}
+const client = loaded.factory((id) => {
+  if (id === 'react') return React
+  throw new Error(`unexpected require: ${id}`)
+})
+check('导出 apply 与 inject', typeof client.apply === 'function' && Array.isArray(client.inject))
+// bundle 里读 document.documentElement.lang，测试环境补一个
+globalThis.document = fakeDocument
+client.apply(ctx)
+const three = slotsSeen.length === 3
+  && slotsSeen[0].descriptor.name === 'plugins.bundle.config' && slotsSeen[0].descriptor.key === 'dsh-phone-bridge-web'
+  && slotsSeen[1].descriptor.name === 'sidebar.panellist' && slotsSeen[1].descriptor.id === 'phone-bridge'
+  && slotsSeen[2].descriptor.name === 'main' && slotsSeen[2].descriptor.key === 'phone-bridge'
+check('挂到 plugins.bundle.config / sidebar.panellist / main 三个槽', three, JSON.stringify(slotsSeen.map((s) => s.descriptor)))
+check('侧栏行写的是「互联」', slotsSeen[1] && slotsSeen[1].descriptor.label() === '互联', slotsSeen[1] && String(slotsSeen[1].descriptor.label()))
+const icon = slotsSeen[1].component({ size: 18 })
+check('侧栏图标是 svg', icon && icon.type === 'svg' && icon.props.width === 18, icon && icon.type)
+let rendered = null
+try {
+  rendered = slotsSeen[0].component({})
+} catch (error) {
+  rendered = null
+  check('卡片首帧能渲染', false, String(error?.stack || error))
+}
+check('卡片首帧能渲染', Boolean(rendered) && tree.length > 0)
+const texts = []
+;(function collect(node) {
+  if (!node || typeof node !== 'object') return
+  if (typeof node.children) {}
+  for (const child of node.children || []) {
+    if (typeof child === 'string') texts.push(child)
+    else collect(child)
+  }
+})(rendered)
+check('文案是中文', texts.some((text) => text.includes('互联')), texts.slice(0, 6).join(' | '))
+// 侧栏那一页：同一个组件，但有独立滚动容器、没有卡片边框
+const page = slotsSeen[2].component({})
+check('面板页自带滚动容器', page && page.props.style && page.props.style.overflow === 'auto' && page.props.style.height === '100%', JSON.stringify(page && page.props.style))
+check('面板页不再套卡片边框', !page.props.style.border, JSON.stringify(page.props.style))
+
+
+// ── wake（唤醒会话）──────────────────────────────────────────────────────────
+check('state 带 wake 字段', first.data.wake && first.data.wake.enabled === false && first.data.wake.sessionId === '', JSON.stringify(first.data.wake))
+const wokeSave = await post({ action: 'wake', enabled: true, sessionId: 'sess-test-1', mode: 'queue' })
+check('打开唤醒落盘', wokeSave.res.status === 200 && /唤醒：开/.test(wokeSave.data.text || ''), JSON.stringify(wokeSave.data))
+const afterWake = await get()
+check('wake 设置回读', afterWake.data.wake.enabled === true && afterWake.data.wake.sessionId === 'sess-test-1', JSON.stringify(afterWake.data.wake))
+
+const calls = []
+const probeAgents = { get: (id) => (id === 'sess-test-1' ? { followup: (m) => calls.push(m), steer: (m) => calls.push(m) } : undefined) }
+const missing = await host.wakeSession(probeAgents, 'nope', 'hi').then(() => '', (error) => String(error.message || error))
+check('未打开的会话给出提示', /没开在引擎里/.test(missing), missing)
+const sent = await host.wakeSession(probeAgents, 'sess-test-1', '来自手机的消息')
+check('followup 收到用户消息', calls.length === 1 && calls[0].role === 'user' && calls[0].content[0].type === 'text' && calls[0].content[0].text === '来自手机的消息' && calls[0].source.kind === 'user', JSON.stringify(calls[0]))
+check('wakeSession 返回摘要', sent.sessionId === 'sess-test-1' && sent.mode === 'queue' && sent.preview.startsWith('来自手机'), JSON.stringify(sent))
+
+
+// ── 自动目标：模型用过的会话就是唤醒对象 ─────────────────────────────────────
+await post({ action: 'wake', enabled: true, sessionId: '' })
+fs.mkdirSync(path.join(home, 'phone-bridge'), { recursive: true })
+fs.writeFileSync(path.join(home, 'phone-bridge', 'active.json'), JSON.stringify({ sessionId: 'sess-active-9', at: new Date().toISOString(), tool: 'peer_info' }))
+const withActive = await get()
+check('state 暴露自动会话', withActive.data.wake.target === 'sess-active-9' && withActive.data.wake.ready === true, JSON.stringify(withActive.data.wake))
+const autoWake = await post({ action: 'wake', text: '手机说：电脑在吗' })
+check('不填会话也能投递', autoWake.res.status === 200 && /已把消息投进会话 sess-act/.test(autoWake.data.text || ''), JSON.stringify(autoWake.data))
+check('followup 收到来自手机的消息', wokenMessages.length === 1 && wokenMessages[0].content[0].text === '手机说：电脑在吗', JSON.stringify(wokenMessages[0]))
+const modeWake = await post({ action: 'wake', enabled: true, mode: 'steer' })
+check('投递方式可切换', modeWake.data.state.wake.mode === 'steer', JSON.stringify(modeWake.data.state.wake))
+
+
+// ── 会话目录：消息写 desktop:<名字> 时能解析到具体会话 ───────────────────────
+fs.writeFileSync(
+  path.join(home, 'phone-bridge', 'registry.json'),
+  JSON.stringify({
+    sessions: {
+      'sess-active-9': { id: 'sess-active-9', name: '登录页', purpose: '改登录页的验证码流程', calls: 3, at: new Date().toISOString() },
+      'sess-other-1': { id: 'sess-other-1', name: '支付', purpose: '订单支付的回归测试', calls: 1, at: new Date(Date.now() - 60000).toISOString() },
+    },
+  }),
+)
+check('按名字解析会话', host.resolveNamed('登录页')?.id === 'sess-active-9', JSON.stringify(host.resolveNamed('登录页')))
+check('按用途关键词解析', host.resolveNamed('支付')?.id === 'sess-other-1', JSON.stringify(host.resolveNamed('支付')))
+check('按 id 前缀解析', host.resolveNamed('sess-other')?.id === 'sess-other-1', JSON.stringify(host.resolveNamed('sess-other')))
+check('没写过的名字解析不到', host.resolveNamed('不存在的会话') === null, String(host.resolveNamed('不存在的会话')))
+const withRegistry = await get()
+check('state 暴露会话目录', withRegistry.data.registry?.length === 2 && withRegistry.data.registry.some((row) => row.name === '登录页'), JSON.stringify(withRegistry.data.registry))
+
+// ── 引擎半自注册：从市场装的 bundle 自己把 bridge.mjs 挂上去 ──────────────────
+const profileDir = path.join(home, 'profiles', 'test-profile')
+fs.mkdirSync(profileDir, { recursive: true })
+const patchFile = path.join(profileDir, 'cordis.patch.yml')
+fs.writeFileSync(patchFile, '# 用户自己的补丁\n- insert:\n    - id: phone-bridge-web\n      name: dsh-phone-bridge-web\n')
+check('找得到 bridge.mjs', typeof host.enginePath() === 'string' && host.enginePath().endsWith('bridge.mjs'), String(host.enginePath()))
+const patched = host.installEngineRow()
+check('补进了引擎行', patched.length === 1 && path.resolve(patched[0]) === path.resolve(patchFile), JSON.stringify(patched))
+const afterPatch = fs.readFileSync(patchFile, 'utf8')
+check('引擎行是 mcp-client + stdio', /id: dsh-phone-bridge\s*$/m.test(afterPatch) && /name: '@deepseek-ai\/dsh-mcp-client'/.test(afterPatch) && /serverName: phone-bridge/.test(afterPatch) && /transport: stdio/.test(afterPatch), afterPatch)
+check('args 指向真实 bridge.mjs', afterPatch.includes(host.enginePath()), afterPatch)
+check('不动用户原有内容', afterPatch.includes('id: phone-bridge-web') && afterPatch.includes('用户自己的补丁'))
+const again = host.installEngineRow()
+check('重复加载不重复写', again.length === 0 && fs.readFileSync(patchFile, 'utf8') === afterPatch)
+fs.writeFileSync(path.join(profileDir, 'package.json'), JSON.stringify({ dsh: { profile: { bundles: ['dsh-phone-bridge-web'] } } }))
+fs.writeFileSync(patchFile, '# 空补丁\n')
+check('只靠 bundles 列表也认得', host.installEngineRow().length === 1)
+process.env.PHONE_BRIDGE_NO_AUTOPATCH = '1'
+fs.writeFileSync(patchFile, '# 空补丁\n')
+check('环境变量能关掉自注册', host.installEngineRow().length === 0)
+delete process.env.PHONE_BRIDGE_NO_AUTOPATCH
+
+fs.rmSync(home, { recursive: true, force: true })
+
+console.log(`\n${pass} 通过，${fail} 失败`)
+process.exit(fail ? 1 : 0)
