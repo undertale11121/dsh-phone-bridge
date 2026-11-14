@@ -334,6 +334,19 @@ async function runAction(body) {
     const auto = wake.sessionId || readActive()?.sessionId || ''
     return { text: `唤醒：${wake.enabled ? '开' : '关'}${auto ? `，会话 ${auto.slice(0, 8)}…` : '，还没记录到会话'}` }
   }
+  if (body.action === 'say') {
+    // 用户（或任一端模型）在面板上打一句话，直接进工作台，对端的收件器
+    // 会把它投进钉住的会话。和模型自己说话用的是同一条管道。
+    const text = String(body.text || '').trim()
+    if (!text) throw new Error('要说的话不能是空的')
+    const collab = readCollab(config)
+    const to = String(body.to || 'phone')
+    let target = to
+    if (to === 'phone' && collab.phoneSessionId) target = `phone:${collab.phoneSessionId}`
+    const info = await ensureServer(config)
+    const row = await bridgePost(`http://127.0.0.1:${info.port}`, '/thread', config.token, { from: 'desktop', to: target, text })
+    return { text: `已发到 ${target}（#${row.seq ?? '?'}）` }
+  }
   if (body.action === 'collab') {
     const collab = readCollab(config)
     if (typeof body.desktopSessionId === 'string') collab.desktopSessionId = body.desktopSessionId.trim()

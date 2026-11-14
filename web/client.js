@@ -71,6 +71,17 @@ window.__ModuleLoader__.load({
         wakeNotReady: '引擎里没挂上 agents 服务，唤醒不可用（重启 DSH 试试）',
         wakeOk: '已保存',
         phoneNote: '这台是手机端：连接和配对请用 App 输入框上方的「互联」胶囊，这里只显示状态。',
+        collab: '两个会话直连',
+        collabHint: '选定之后，消息不再丢在工作台上等人来取，而是直接投进对方开着的会话——两边模型都能像人一样发话。',
+        collabDesktop: '电脑上哪个会话',
+        collabPhone: '手机上哪个会话',
+        collabNone: '（还没选）',
+        liveTitle: '电脑上开着的会话',
+        liveNone: '电脑上现在没有开着的会话',
+        phoneNone: '手机上还没报上来说开着的会话（手机要跑新版插件）',
+        sayToPhone: '发给手机',
+        sayToDesktop: '发给电脑',
+        sayPlaceholder: '打一句话，直接送到对面的会话里',
       },
       en: {
         title: 'Link',
@@ -116,6 +127,17 @@ window.__ModuleLoader__.load({
         none: 'No phone registered yet',
         failed: 'Failed to read',
         phoneNote: 'This machine is the phone side: pair it from the “Phone bridge” capsule in the app. This card is read-only here.',
+        collab: 'Two sessions, straight through',
+        collabHint: 'Once picked, a message is delivered into the session open on the other side instead of waiting on the workbench — both models can just talk.',
+        collabDesktop: 'Desktop session',
+        collabPhone: 'Phone session',
+        collabNone: '(none yet)',
+        liveTitle: 'Sessions open on this desktop',
+        liveNone: 'Nothing is open on this desktop right now',
+        phoneNone: 'The phone has not reported its sessions yet (it needs the newer build)',
+        sayToPhone: 'Send to phone',
+        sayToDesktop: 'Send to desktop',
+        sayPlaceholder: 'Type a line; it lands straight in the session on the other side',
       },
     }
 
@@ -149,6 +171,9 @@ window.__ModuleLoader__.load({
         var wakeIdPair = useState('')
         var wakeId = wakeIdPair[0]
         var setWakeId = wakeIdPair[1]
+        var sayPair = useState('')
+        var sayText = sayPair[0]
+        var setSayText = sayPair[1]
 
         var load = useCallback(function () {
           fetch('/phone-bridge/config', { headers: { accept: 'application/json' } })
@@ -230,6 +255,18 @@ window.__ModuleLoader__.load({
           color: 'inherit',
         }
         var mono = { fontFamily: 'ui-monospace, Consolas, monospace', fontSize: 12, wordBreak: 'break-all' }
+        var field = {
+          appearance: 'none',
+          font: 'inherit',
+          fontSize: 13,
+          padding: '7px 10px',
+          borderRadius: 8,
+          border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,0.35))',
+          background: 'var(--dsw-alias-bg-layer-3, rgba(127,127,127,0.08))',
+          color: 'inherit',
+          width: '100%',
+          boxSizing: 'border-box',
+        }
         // ISO timestamps in sessions.json are unreadable in a narrow row; show a
         // short local minute stamp instead, and fall back to the raw value.
         function shortTime(value) {
@@ -416,6 +453,82 @@ window.__ModuleLoader__.load({
               h('pre', { style: Object.assign({}, mono, { whiteSpace: 'pre-wrap', margin: '6px 0 0', maxHeight: 180, overflow: 'auto' }) }, state.log.join('\n')),
             ))
           }
+        }
+
+        // ── 两个会话直连 ────────────────────────────────────────────────────
+        // 这是这一页的主功能：挑一个电脑上的会话、一个手机上的会话，然后直接
+        // 说话。消息走的是模型自己用的那条 /thread 管道，所以人和模型发出去的
+        // 东西没有区别。
+        if (!onPhone && state) {
+          var collab = state.collab || {}
+          var live = state.live || []
+          var phoneRows = (state.agents || []).filter(function (item) {
+            return item && item.kind === 'session' && item.host === 'phone'
+          })
+          var pickCollab = function (patch) {
+            var next = {
+              action: 'collab',
+              desktopSessionId: collab.desktopSessionId || '',
+              phoneSessionId: collab.phoneSessionId || '',
+              phoneName: collab.phoneName || '',
+            }
+            Object.keys(patch).forEach(function (key) {
+              next[key] = patch[key]
+            })
+            act(next)
+          }
+          var send = function (to) {
+            var text = String(sayText || '').trim()
+            if (!text) return
+            act({ action: 'say', to: to, text: text })
+            setSayText('')
+          }
+          children.push(h('div', { key: 'collab', style: { marginTop: 16 } },
+            h('div', { style: { fontSize: 14, fontWeight: 600 } }, t.collab),
+            h('div', { style: Object.assign({}, muted, { padding: '2px 0 8px' }) }, t.collabHint),
+            h('div', { style: { display: 'flex', gap: 12, flexWrap: 'wrap' } },
+              h('label', { style: { display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, flex: '1 1 220px', minWidth: 0 } },
+                h('span', { style: muted }, t.collabDesktop),
+                h('select', {
+                  value: collab.desktopSessionId || '',
+                  style: field,
+                  onChange: function (event) { pickCollab({ desktopSessionId: event.target.value }) },
+                },
+                  h('option', { value: '' }, t.collabNone),
+                  live.map(function (item) {
+                    var label = (item.title || item.cwd || '会话') + ' · ' + String(item.id).slice(0, 8)
+                    return h('option', { key: item.id, value: item.id }, label)
+                  }),
+                ),
+                live.length ? null : h('div', { style: muted }, t.liveNone),
+              ),
+              h('label', { style: { display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, flex: '1 1 220px', minWidth: 0 } },
+                h('span', { style: muted }, t.collabPhone),
+                h('select', {
+                  value: collab.phoneSessionId || '',
+                  style: field,
+                  onChange: function (event) { pickCollab({ phoneSessionId: event.target.value }) },
+                },
+                  h('option', { value: '' }, t.collabNone),
+                  phoneRows.map(function (item) {
+                    var label = (item.name || '手机会话') + ' · ' + String(item.id).replace(/^psess:/, '').slice(0, 8)
+                    return h('option', { key: item.id, value: String(item.id).replace(/^psess:/, '') }, label)
+                  }),
+                ),
+                phoneRows.length ? null : h('div', { style: muted }, t.phoneNone),
+              ),
+            ),
+            h('div', { style: { display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' } },
+              h('input', {
+                value: sayText,
+                placeholder: t.sayPlaceholder,
+                style: Object.assign({}, field, { flex: '1 1 240px', width: 'auto' }),
+                onChange: function (event) { setSayText(event.target.value) },
+                onKeyDown: function (event) { if (event.key === 'Enter') send('phone') },
+              }),
+              h('button', { type: 'button', style: button, disabled: Boolean(busy) || !String(sayText || '').trim(), onClick: function () { send('phone') } }, t.sayToPhone),
+            ),
+          ))
         }
 
         if (!onPhone && state && state.thread && state.thread.length) {
