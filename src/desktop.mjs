@@ -523,7 +523,14 @@ class DesktopBridge {
           auth.k === 'token' ? tokenEqual(auth.token, this.config.token) : this.verifyDevice(`${auth.id}:${auth.ts}`, auth.sig, auth.id)
         if (!ok) return sendJson(res, 401, { ok: false })
         const stored = readJson(desktopConfigPath(), {})
-        return sendJson(res, 200, { ok: true, collab: stored?.collab || null })
+        // 顺便把「电脑上开着哪些会话」带回去，否则手机模型无从点名：
+        // 它只能看到自己那边的会话。快照由宿主半每 3 秒写进 live.json。
+        const live = readJson(path.join(bridgeDir(), 'live.json'), {})
+        return sendJson(res, 200, {
+          ok: true,
+          collab: stored?.collab || null,
+          desktopSessions: Array.isArray(live?.sessions) ? live.sessions : [],
+        })
       }
       return sendJson(res, 405, { ok: false })
     }

@@ -465,6 +465,49 @@ function syncRegistry(agents) {
   }
 }
 
+/**
+ * 手机侧：把对面（电脑）报上来的会话记进本机目录。
+ *
+ * 为什么要有这个：手机模型想知道「电脑上开着哪些会话」才能 to: 'desktop:<名字>'
+ * 点名，但它自己看不到对方。电脑端每 3 秒把活会话写进 live.json，桥接服务的
+ * GET /collab 顺手带回来，这里收下。
+ *
+ * 只补第一次，不覆盖模型自己写的名字/用途；host 标 'desktop'，
+ * session_list 会显示「电脑上」。
+ */
+export function syncPeerSessions(rows) {
+  if (!Array.isArray(rows) || !rows.length) return 0
+  const data = readRegistry()
+  if (!data.sessions) data.sessions = {}
+  const now = new Date().toISOString()
+  let changed = 0
+  for (const row of rows) {
+    const id = String(row?.id || '')
+    if (!id) continue
+    const previous = data.sessions[id]
+    if (previous && previous.name) continue
+    data.sessions[id] = {
+      id,
+      name: String(row.title || row.name || '') || String(row.cwd || ''),
+      purpose: previous?.purpose || '',
+      project: previous?.project || '',
+      cwd: String(row.cwd || ''),
+      host: 'desktop',
+      at: previous?.at || now,
+      ast: now,
+      calls: previous?.calls || 0,
+    }
+    changed += 1
+  }
+  if (!changed) return 0
+  try {
+    writeJson(registryPath(), data)
+  } catch {
+    return 0
+  }
+  return changed
+}
+
 // "登录页" / "3f9a2b1c" / 用途里的词 → 一个会话
 export function resolveNamed(name) {
   const wanted = String(name || '').trim().toLowerCase()
@@ -619,6 +662,18 @@ async function wakeTick(agents) {
     if (wake.enabled || config.token) syncRegistry(agents)
   } catch {
     // 目录登记失败不影响唤醒
+  }
+  // 顺手写一份「这边开着哪些会话」的快照，桥接服务的 GET /collab 会带给对面。
+  // 手机模型靠它才能 to: 'desktop:<名字>' 点名——它自己看不到电脑开了什么。
+  try {
+    if (config.token) {
+      writeJson(path.join(bridgeDir(), 'live.json'), {
+        at: new Date().toISOString(),
+        sessions: listLiveSessions(agents),
+      })
+    }
+  } catch {
+    // 快照失败不影响唤醒
   }
   if (!wake.enabled || !config.token) return
 
@@ -1011,9 +1066,18 @@ async function inboxTick(agents, lastReport) {
   // 接收方向不节流：这些本来就是该手机看见的消息，压住只会让对话卡住。
 
   let collab = null
+  let peerSessions = []
   try {
-    collab = (await bridgeGet(base, '/collab', config.token, 5000))?.collab || null
+    const snapshot = await bridgeGet(base, '/collab', config.token, 5000)
+    collab = snapshot?.collab || null
+    peerSessions = Array.isArray(snapshot?.desktopSessions) ? snapshot.desktopSessions : []
   } catch {}
+  // 电脑上开着的会话也记进本机目录，手机模型才有得点名
+  if (peerSessions.length) {
+    try {
+      syncPeerSessions(peerSessions)
+    } catch {}
+  }
   const pinned = String(collab?.phoneSessionId || '')
 
   const incoming = (data?.messages || []).filter((item) => {

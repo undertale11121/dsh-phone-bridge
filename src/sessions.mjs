@@ -133,6 +133,7 @@ export function listSessions() {
       purpose: row.purpose || '',
       project: row.project || '',
       cwd: row.cwd || '',
+      host: row.host === 'phone' ? 'phone' : 'desktop',
       calls: row.calls || 0,
       at: row.ast || row.at || '',
       active: row.id === active,
@@ -144,7 +145,9 @@ export function formatSessions(rows = listSessions()) {
   return rows
     .map((row) => {
       const flags = [row.active ? '当前' : '', row.purpose ? '' : '没写用途'].filter(Boolean).join('，')
-      const head = `${row.short} · ${row.name || '未命名'}${flags ? `（${flags}）` : ''}`
+      // 从对面同步来的会话也在这张表里，标清在哪台机器上，否则点名会点错
+      const where = row.host === 'phone' ? '手机上' : '电脑上'
+      const head = `${row.short} · ${row.name || '未命名'} · ${where}${flags ? `（${flags}）` : ''}`
       const detail = [row.purpose || '', row.project ? `项目 ${row.project}` : '', row.cwd ? `目录 ${row.cwd}` : '']
         .filter(Boolean)
         .join('；')
