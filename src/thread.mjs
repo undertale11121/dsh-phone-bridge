@@ -150,6 +150,10 @@ export function append(from, text, to = 'all', levelOrOptions = 'normal') {
     }
     if (options.silent) row.silent = true
     if (options.kind) row.kind = String(options.kind).slice(0, 40)
+    // 发起方身份：桌面侧拿不到 MCP caller（DSH 不传），只能让发消息的模型
+    // 自己报上「我是哪个会话」。对端靠它决定投进哪个对话 / 要不要新开一个。
+    if (options.desktopId) row.desktopId = String(options.desktopId).slice(0, 80)
+    if (options.phoneId) row.phoneId = String(options.phoneId).slice(0, 80)
     ensureDir(path.dirname(threadPath()))
     fs.appendFileSync(threadPath(), `${JSON.stringify(row)}\n`)
     rotate(all.concat([row]))

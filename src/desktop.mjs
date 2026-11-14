@@ -646,6 +646,8 @@ class DesktopBridge {
           level: body?.level,
           silent: body?.silent === true,
           kind: body?.kind,
+          desktopId: body?.desktopId,
+          phoneId: body?.phoneId,
         })
         const label = known?.name || (sender === 'desktop' ? '电脑模型' : '手机模型')
         log(`对话 +1（${label}${to !== 'all' ? ` → ${to}` : ''}）${row.level !== 'normal' ? `[${row.level}]` : ''}：${truncate(row.text, 90)}`)
@@ -1210,6 +1212,10 @@ export function desktopTools(bridge) {
         properties: {
           to: { type: 'string', description: '目标 agent id，例如 phone、review-1；省略=广播' },
           text: { type: 'string', description: '要说的内容' },
+          from: {
+            type: 'string',
+            description: '发起方是谁：填你自己会话的短 id（session_list 里带「（当前）」那条）。对端靠它决定投进哪个对话、或为你单独开一个。可不填',
+          },
           level: {
             type: 'string',
             description:
@@ -1302,6 +1308,11 @@ export function desktopTools(bridge) {
         properties: {
           text: { type: 'string', description: '要对对方模型说的话' },
           to: { type: 'string', description: '收件人：省略=对端模型；也可写 phone / phone:<会话名> / desktop / desktop:<会话名>' },
+          from: {
+            type: 'string',
+            description:
+              '发起方是谁：填你自己会话的短 id（session_list 里带「（当前）」那条）。想让对端为你这个会话单独开一个对话时必须带上，对端会按它分身',
+          },
           level: {
             type: 'string',
             description:
@@ -1700,7 +1711,7 @@ export async function runDesktopMcp() {
       // 不给 to 就发给「对端模型」本身，而不是广播：对端收件器只认发给自己的
       // 消息（to === 'phone' / 'desktop'），广播的话它不会投递、也就不会唤醒。
       const to = String(args?.to || defaultPeerTarget())
-      const row = threadAppend('desktop', args?.text, to, args?.level)
+      const row = threadAppend('desktop', args?.text, to, { level: args?.level, desktopId: args?.from })
       const peer = to === 'all' ? '所有人（不会唤醒对端）' : nameOf(to)
       const mark = LEVELS[row.level]?.mark ? `${LEVELS[row.level].mark} ` : ''
       return `${mark}已发出（第 ${row.seq} 条 → ${peer}，重要性 ${LEVELS[row.level]?.label || '普通'}）。对方收件器几秒内会把它投进开着的会话并唤醒模型；要当场等回话用 agent_converse。`

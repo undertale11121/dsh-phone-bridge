@@ -122,7 +122,10 @@ function readActiveId() {
 
 export function listSessions() {
   const sessions = Object.values(loadRegistry().sessions || {})
-  const active = readActiveId()
+  // active.json 那条路早就不写了（DSH 不给插件 caller，MCP 里拿不到会话 id），
+  // 所以「当前」以「唤醒钉住的那个会话」为准，再回退到历史字段。
+  const pinned = readJson(path.join(bridgeDir(), 'desktop.json'), {})?.wake?.sessionId
+  const active = pinned || readActiveId()
   return sessions
     .sort((a, b) => String(b.ast || b.at || '').localeCompare(String(a.ast || a.at || '')))
     .map((row) => ({
