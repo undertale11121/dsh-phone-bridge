@@ -247,9 +247,15 @@ async function snapshot() {
       ready: Boolean(agentsRef),
       target: readWake(config).sessionId || readActive()?.sessionId || '',
       targetName: (() => {
+        // 三步退化，都用真实信息，不猜人名：
+        //   ① registry 里登记过的名字  ② 活会话的 cwd 目录名  ③ id 前 8 位
         const id = readWake(config).sessionId || readActive()?.sessionId || ''
+        if (!id) return ''
         const row = sessionRows().find((item) => item.id === id)
-        return row ? row.name : ''
+        if (row && row.name) return row.name
+        const liveRow = listLiveSessions().find((item) => item.id === id)
+        const base = liveRow?.cwd ? path.basename(liveRow.cwd) : ''
+        return base ? `${base} · ${id.slice(0, 8)}` : id.slice(0, 8)
       })(),
       active: readActive(),
     },
@@ -528,6 +534,8 @@ export function listLiveSessions(agents) {
     rows.push({
       id: String(id),
       at: Number(item?.at || item?.updatedAt || item?.lastActivity || 0) || 0,
+      cwd: String(item?.cwd || item?.header?.cwd || ''),
+      title: String(item?.title || item?.name || ''),
     })
   }
   const feed = (value) => {
