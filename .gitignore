@@ -33,3 +33,5 @@ registry.json
 inbox-state.json
 active.json
 .announce.json
+links.json
+consumed.json
