@@ -450,7 +450,6 @@ function readWakeState() {
     cursor: Number(state.cursor || 0),
     lastWake: state.lastWake || null,
     lastError: String(state.lastError || ''),
-    pending: state.pending && typeof state.pending === 'object' ? state.pending : null,
   }
 }
 
@@ -516,11 +515,9 @@ async function alignCursor(fetchThread, viewer = 'desktop') {
 
 // 一次只说一句：投完一条就停下，等对方回话（或等够久）再投下一条。
 // 不然攒了几条的消息会一口气灌进对方会话，看着就是刷屏。
+// 注意：这只管**发送**方向。接收方向（别人发给我的话）不能压——那是该我看见的消息，
+// 压 120 秒等于让对话卡住。所以 wakeTick/inboxTick 都不用它，留给 say/peer_say。
 const REPLY_WAIT_MS = 120_000
-
-function repliedSince(rows, from, seq) {
-  return (rows || []).some((row) => row && row.from !== from && Number(row.seq || 0) > Number(seq || 0))
-}
 
 async function wakeTick(agents) {
   const config = readConfig()
@@ -555,12 +552,7 @@ async function wakeTick(agents) {
 
   // 上一条还没等到回话就别急着投下一条。等超过 REPLY_WAIT_MS 就当对方在忙，
   // 继续投——宁可慢，也不能把消息永远卡在自己这儿。
-  if (state.pending) {
-    const replied = repliedSince(data.messages, 'desktop', state.pending.seq)
-    const stale = Date.now() - Number(state.pending.at || 0) > REPLY_WAIT_MS
-    if (!replied && !stale) return
-    state.pending = null
-  }
+  // 接收方向不节流：这些本来就是该我看见的消息，压住只会让对话卡住。
 
   const incoming = (data.messages || []).filter(
     (item) => item && item.from !== 'desktop' && (item.to === 'desktop' || String(item.to || '').startsWith('desktop:')),
@@ -616,14 +608,11 @@ async function wakeTick(agents) {
     try {
       state.lastWake = await wakeSession(agents, sessionId, text, wake.mode)
       state.lastError = ''
-      // 只推进到这一条：剩下的一条一条来，等对方回话再投。
       state.cursor = Number(item.seq || state.cursor)
-      state.pending = { seq: Number(item.seq || 0), at: Date.now() }
     } catch (error) {
       state.lastError = String(error?.message || error)
       break
     }
-    break
   }
   writeWakeState(state)
 }
@@ -819,13 +808,7 @@ async function inboxTick(agents, lastReport) {
     return lastReport
   }
 
-  // 一次只说一句：上一条还在等回话就先停手。
-  if (state.pending) {
-    const replied = repliedSince(data?.messages, 'phone', state.pending.seq)
-    const stale = Date.now() - Number(state.pending.at || 0) > REPLY_WAIT_MS
-    if (!replied && !stale) return lastReport
-    state.pending = null
-  }
+  // 接收方向不节流：这些本来就是该手机看见的消息，压住只会让对话卡住。
 
   let collab = null
   try {
@@ -852,14 +835,11 @@ async function inboxTick(agents, lastReport) {
       try {
         state.lastWake = await wakeSession(agents, target.id, `【来自电脑模型的消息】\n${item.text}`, 'queue')
         state.lastError = ''
-        // 同上：只推进到这一条，等下一条要等对方回话。
         state.cursor = Number(item.seq || state.cursor)
-        state.pending = { seq: Number(item.seq || 0), at: Date.now() }
       } catch (error) {
         state.lastError = String(error?.message || error)
         break
       }
-      break
     }
     writeJson(inboxStatePath(), state)
   }
