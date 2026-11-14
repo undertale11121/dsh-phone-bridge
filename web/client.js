@@ -185,6 +185,9 @@ function __buildPhoneBridge(require) {
         var sayPair = useState('')
         var sayText = sayPair[0]
         var setSayText = sayPair[1]
+        var sayLevelPair = useState('normal')
+        var sayLevel = sayLevelPair[0]
+        var setSayLevel = sayLevelPair[1]
 
         var load = useCallback(function () {
           fetch('/phone-bridge/config', { headers: { accept: 'application/json' } })
@@ -278,6 +281,45 @@ function __buildPhoneBridge(require) {
           width: '100%',
           boxSizing: 'border-box',
         }
+        // 分块卡片：面板再长也不会糊成一坨，每块自己能认出来。
+        var card = {
+          marginTop: 14,
+          padding: '13px 15px',
+          borderRadius: 12,
+          border: '1px solid var(--dsw-alias-border-l1, rgba(127,127,127,0.16))',
+          background: 'var(--dsw-alias-bg-layer-2, rgba(127,127,127,0.04))',
+        }
+        var cardTitle = {
+          fontSize: 12,
+          fontWeight: 700,
+          letterSpacing: '0.04em',
+          opacity: 0.62,
+          marginBottom: 8,
+        }
+        var dot = function (ok) {
+          return {
+            display: 'inline-block',
+            width: 8,
+            height: 8,
+            borderRadius: 999,
+            marginRight: 6,
+            background: ok ? 'var(--dsw-alias-accent-green, #46c07a)' : 'var(--dsw-alias-label-tertiary, #999)',
+          }
+        }
+        // 暗号和 src/thread.mjs 的 LEVELS 一一对应：发消息时选一个，对方
+        // 的唤醒语里就会带这个符号。
+        var LEVELS = [
+          { key: 'normal', mark: '', label: '普通' },
+          { key: 'urgent', mark: '❗', label: '等你回' },
+          { key: 'question', mark: '❓', label: '要你决定' },
+          { key: 'alert', mark: '⚠️', label: '出问题了' },
+          { key: 'done', mark: '✅', label: '做完了' },
+          { key: 'report', mark: '📋', label: '汇报' },
+        ]
+        var markOf = function (level) {
+          for (var i = 0; i < LEVELS.length; i += 1) if (LEVELS[i].key === level) return LEVELS[i].mark
+          return ''
+        }
         // ISO timestamps in sessions.json are unreadable in a narrow row; show a
         // short local minute stamp instead, and fall back to the raw value.
         function shortTime(value) {
@@ -307,8 +349,10 @@ function __buildPhoneBridge(require) {
               style: Object.assign({}, pill, {
                 background: paired ? 'rgba(52,168,83,0.16)' : 'rgba(242,139,130,0.16)',
                 color: paired ? 'var(--dsw-alias-accent-green, #34a853)' : 'var(--dsw-alias-accent-red, #f28b82)',
+                display: 'inline-flex',
+                alignItems: 'center',
               }),
-            }, paired ? t.online : t.offline),
+            }, h('span', { style: dot(paired) }, null), paired ? t.online : t.offline),
             h('span', { style: muted }, t.subtitle),
           ),
         )
@@ -353,8 +397,8 @@ function __buildPhoneBridge(require) {
 
           var wake = (state && state.wake) || {}
           var wakeTarget = String(wake.target || '')
-          children.push(h('div', { key: 'wake', style: { marginTop: 12 } },
-            h('div', { style: muted }, t.wake),
+          children.push(h('div', { key: 'wake', style: card },
+            h('div', { style: cardTitle }, t.wake),
             h('div', { style: Object.assign({}, muted, { padding: '2px 0 6px' }) }, t.wakeHint),
             h('div', { style: Object.assign({}, row, { padding: '2px 0' }) },
               h('span', { style: muted }, t.wakeTarget),
@@ -374,7 +418,7 @@ function __buildPhoneBridge(require) {
             wake.lastError
               ? h('div', { style: Object.assign({}, muted, { color: 'var(--dsw-alias-accent-red, #f28b82)', padding: '6px 0 0' }) }, wake.lastError)
               : null,
-            h('div', { style: { marginTop: 12, fontWeight: 600 } }, t.registryTitle),
+            h('div', { style: cardTitle }, t.registryTitle),
             h('div', { style: Object.assign({}, muted, { padding: '2px 0 6px' }) }, t.registryHint),
             state.registry && state.registry.length
               ? h(
@@ -493,11 +537,11 @@ function __buildPhoneBridge(require) {
           var send = function (to) {
             var text = String(sayText || '').trim()
             if (!text) return
-            act({ action: 'say', to: to, text: text })
+            act({ action: 'say', to: to, text: text, level: sayLevel })
             setSayText('')
           }
-          children.push(h('div', { key: 'collab', style: { marginTop: 16 } },
-            h('div', { style: { fontSize: 14, fontWeight: 600 } }, t.collab),
+          children.push(h('div', { key: 'collab', style: card },
+            h('div', { style: cardTitle }, t.collab),
             h('div', { style: Object.assign({}, muted, { padding: '2px 0 8px' }) }, t.collabHint),
             h('div', { style: { display: 'flex', gap: 12, flexWrap: 'wrap' } },
               h('label', { style: { display: 'flex', flexDirection: 'column', gap: 4, fontSize: 13, flex: '1 1 220px', minWidth: 0 } },
@@ -536,11 +580,21 @@ function __buildPhoneBridge(require) {
                 phoneRows.length ? null : h('div', { style: muted }, t.phoneNone),
               ),
             ),
-            h('div', { style: { display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' } },
+            h('div', { style: { display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'stretch' } },
+              h('select', {
+                value: sayLevel,
+                title: '这条消息有多要紧：对方的唤醒语里会带这个符号',
+                style: Object.assign({}, field, { width: 'auto', flex: '0 0 auto', minWidth: 108 }),
+                onChange: function (event) { setSayLevel(event.target.value) },
+              },
+                LEVELS.map(function (item) {
+                  return h('option', { key: item.key, value: item.key }, (item.mark ? item.mark + ' ' : '') + item.label)
+                }),
+              ),
               h('input', {
                 value: sayText,
                 placeholder: t.sayPlaceholder,
-                style: Object.assign({}, field, { flex: '1 1 240px', width: 'auto' }),
+                style: Object.assign({}, field, { flex: '1 1 200px', width: 'auto' }),
                 onChange: function (event) { setSayText(event.target.value) },
                 onKeyDown: function (event) { if (event.key === 'Enter') send('phone') },
               }),
@@ -550,12 +604,35 @@ function __buildPhoneBridge(require) {
         }
 
         if (!onPhone && state && state.thread && state.thread.length) {
-          children.push(h('div', { key: 'thread', style: { marginTop: 12 } },
-            h('div', { style: muted }, t.thread),
-            h('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, marginTop: 6 } },
-              state.thread.map(function (row) {
-                return h('div', { key: 'thread-' + row.seq, style: { fontSize: 13 } },
-                  (row.from === 'phone' ? '📱 ' : '💻 ') + (row.at ? fmtClock(row.at) + ' ' : '') + String(row.text).slice(0, 160))
+          // 只渲染最近 24 条：面板是给人扫一眼的，不是聊天记录管理器。
+          var visible = state.thread.slice(-24)
+          children.push(h('div', { key: 'thread', style: card },
+            h('div', { style: Object.assign({}, cardTitle, { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }) },
+              h('span', null, t.thread),
+              h('span', { style: { fontWeight: 400 } }, visible.length + ' / ' + state.thread.length),
+            ),
+            h('div', { style: { display: 'flex', flexDirection: 'column', gap: 7, marginTop: 4, maxHeight: 320, overflowY: 'auto', paddingRight: 4 } },
+              visible.map(function (row) {
+                var mine = row.from !== 'phone'
+                var mark = markOf(row.level)
+                return h('div', {
+                  key: 'thread-' + row.seq,
+                  style: {
+                    alignSelf: mine ? 'flex-end' : 'flex-start',
+                    maxWidth: '88%',
+                    padding: '7px 10px',
+                    borderRadius: 10,
+                    fontSize: 13,
+                    lineHeight: 1.5,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    background: mine ? 'rgba(76,141,255,0.14)' : 'rgba(127,127,127,0.10)',
+                  },
+                },
+                  h('div', { style: { fontSize: 11, opacity: 0.6, marginBottom: 2 } },
+                    (mark ? mark + ' ' : '') + (mine ? '💻 我' : '📱 手机') + (row.at ? ' · ' + fmtClock(row.at) : '')),
+                  String(row.text).slice(0, 400),
+                )
               }),
             ),
             state.workbenchUrl
@@ -579,12 +656,16 @@ function __buildPhoneBridge(require) {
           ))
         }
         if (notice) children.push(h('div', { key: 'notice', style: { marginTop: 10, fontSize: 13, color: 'var(--dsw-alias-label-secondary, #666)' } }, notice))
-        if (!onPhone) children.push(h('div', { key: 'actions', style: { display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' } },
-          h('button', { type: 'button', style: button, disabled: Boolean(busy), onClick: function () { act({ action: 'permit' }) } }, t.permit),
-          h('button', { type: 'button', style: button, disabled: Boolean(busy), onClick: function () { act({ action: 'code' }) } }, t.code),
-          h('button', { type: 'button', style: button, disabled: Boolean(busy), onClick: function () { act({ action: 'start' }) } }, t.start),
-          h('button', { type: 'button', style: button, disabled: Boolean(busy), onClick: function () { act({ action: 'token' }) } }, t.newToken),
-          h('button', { type: 'button', style: button, disabled: Boolean(busy), onClick: load }, t.refresh),
+        // 这几个是偶尔才点的维护动作，默认收起来，别让它们抢走日常操作的注意力。
+        if (!onPhone) children.push(h('details', { key: 'actions', style: { marginTop: 14 } },
+          h('summary', { style: { cursor: 'pointer', fontSize: 12, fontWeight: 700, letterSpacing: '0.04em', opacity: 0.62 } }, '维护'),
+          h('div', { style: { display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' } },
+            h('button', { type: 'button', style: button, disabled: Boolean(busy), onClick: function () { act({ action: 'permit' }) } }, t.permit),
+            h('button', { type: 'button', style: button, disabled: Boolean(busy), onClick: function () { act({ action: 'code' }) } }, t.code),
+            h('button', { type: 'button', style: button, disabled: Boolean(busy), onClick: function () { act({ action: 'start' }) } }, t.start),
+            h('button', { type: 'button', style: button, disabled: Boolean(busy), onClick: function () { act({ action: 'token' }) } }, t.newToken),
+            h('button', { type: 'button', style: button, disabled: Boolean(busy), onClick: load }, t.refresh),
+          ),
         ))
 
         if (surface === 'panel') {

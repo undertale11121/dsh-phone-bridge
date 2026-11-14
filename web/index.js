@@ -356,7 +356,7 @@ async function runAction(body) {
     let target = to
     if (to === 'phone' && collab.phoneSessionId) target = `phone:${collab.phoneSessionId}`
     const info = await ensureServer(config)
-    const row = await bridgePost(`http://127.0.0.1:${info.port}`, '/thread', config.token, { from: 'desktop', to: target, text })
+    const row = await bridgePost(`http://127.0.0.1:${info.port}`, '/thread', config.token, { from: 'desktop', to: target, text, level: body.level })
     return { text: `已发到 ${target}（#${row.seq ?? '?'}）` }
   }
   if (body.action === 'collab') {
@@ -677,10 +677,11 @@ export function composeBatch(incoming, who) {
   const joined = rows.map((item) => String(item?.text == null ? '' : item.text)).join('\n')
   const peek = joined.length > PEEK_CHARS ? `${joined.slice(0, PEEK_CHARS)}…` : joined
   const level = topLevel(rows)
+  // 符号本身就说明了要紧程度，别再加「（重要，等你回）」这种括号——
+  // 用户原话：「你都有暗号了，干嘛还要加个括号说要你决定」。
   const mark = LEVEL_MARKS[level] ? `${LEVEL_MARKS[level]} ` : ''
-  const label = LEVEL_LABELS[level] ? `（${LEVEL_LABELS[level]}）` : ''
   return (
-    `${mark}【互联】${head}（${total} 字）${when}${label}\n${peek}\n` +
+    `${mark}【互联】${head}（${total} 字）${when}\n${peek}\n` +
     '（全文在工作台，peer_read 看完整内容；回话时顺带说一句你这边的进度，对方才知道你在干哪一半。）'
   )
 }

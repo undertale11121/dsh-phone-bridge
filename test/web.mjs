@@ -122,7 +122,8 @@ check('长消息只带摘要不贴全文', longOne.length < 600 && longOne.inclu
 
 // 暗号：发送方标了 level，唤醒语头上就带符号，一眼看出要不要放下手上的活。
 const urgentOne = host.composeBatch([{ from: 'phone', text: '快看', level: 'urgent' }], '手机模型')
-check('urgent 带 ❗', urgentOne.startsWith('❗') && urgentOne.includes('重要，等你回'), urgentOne)
+// 符号就够了，不该再跟一句「（重要，等你回）」——那是用户明确嫌重复的。
+check('urgent 带 ❗ 且不再加括号说明', urgentOne.startsWith('❗') && urgentOne.includes('要你回') === false, urgentOne)
 const questionOne = host.composeBatch([{ from: 'phone', text: '选哪个', level: 'question' }], '手机模型')
 check('question 带 ❓', questionOne.startsWith('❓'), questionOne)
 const mixedOne = host.composeBatch([
