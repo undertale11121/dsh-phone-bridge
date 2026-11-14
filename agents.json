@@ -1,0 +1,13 @@
+{
+  "agents": [
+    {
+      "id": "psess:session-0a425ca8-4475-4511-bdd4-bca092a30f20",
+      "name": "workspace",
+      "host": "phone",
+      "kind": "session",
+      "note": "手机上开着的会话 · /root/workspace",
+      "running": true,
+      "at": "2026-11-14T12:30:56.451Z"
+    }
+  ]
+}

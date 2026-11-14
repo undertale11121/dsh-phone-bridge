@@ -92,7 +92,8 @@ const token = await post({ action: 'token' })
 check('换配对串', token.data.ok === true && JSON.parse(fs.readFileSync(path.join(home, 'phone-bridge', 'desktop.json'), 'utf8')).token.length >= 16)
 process.env.PHONE_BRIDGE_ROLE = 'phone'
 const asPhone = await get()
-check('手机上标成 phone', asPhone.data.role === 'phone')
+// 这台是 Windows：没有 /sdcard，所以 ROLE=phone 不算数（见 isPhone 的注释）。
+check('ROLE=phone 在非 Android 上不生效', asPhone.data.role === (fs.existsSync('/sdcard') ? 'phone' : 'desktop'))
 process.env.PHONE_BRIDGE_ROLE = 'desktop'
 const bad = await post({ action: 'nope' })
 check('未知动作 400', bad.res.status === 400 && bad.data.ok === false)
@@ -273,6 +274,15 @@ process.env.PHONE_BRIDGE_NO_AUTOPATCH = '1'
 fs.writeFileSync(patchFile, '# 空补丁\n')
 check('环境变量能关掉自注册', host.installEngineRow().length === 0)
 delete process.env.PHONE_BRIDGE_NO_AUTOPATCH
+
+// 角色判定：环境变量不能压过文件系统证据。桌面上误设 ROLE=phone 会把两个方向
+// 都判成手机端（没有唤醒器，消息没人取），所以 ROLE=phone 必须还要 /sdcard 这类
+// 证据才算数。
+check('桌面上 ROLE=phone 也不认（没有 /sdcard）', (process.env.PHONE_BRIDGE_ROLE = 'phone') && host.isPhone() === fs.existsSync('/sdcard'))
+process.env.PHONE_BRIDGE_ROLE = 'desktop'
+check('ROLE=desktop 直接判桌面', host.isPhone() === false)
+delete process.env.PHONE_BRIDGE_ROLE
+check('不设变量时按文件系统判', host.isPhone() === (fs.existsSync('/sdcard') || fs.existsSync('/opt/dsh-app/phone/relay.cjs') || fs.existsSync('/var/lib/dsh-app/phone/bridge.json')))
 
 fs.rmSync(home, { recursive: true, force: true })
 

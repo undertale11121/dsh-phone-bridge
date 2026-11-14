@@ -129,8 +129,17 @@ async function ensureServer(config) {
 // controls live in the App's native panel, so the card says so instead of
 // offering desktop toggles that would mean nothing there.
 export function isPhone() {
-  if (process.env.PHONE_BRIDGE_ROLE) return process.env.PHONE_BRIDGE_ROLE === 'phone'
-  return fs.existsSync('/opt/dsh-app/phone/relay.cjs') || fs.existsSync('/var/lib/dsh-app/phone/bridge.json') || fs.existsSync('/sdcard')
+  // /sdcard 是 Android 独有的，比环境变量可靠。PHONE_BRIDGE_ROLE 只在证据
+  // 站得住时才算数：桌面上万一有人设了 ROLE=phone，不能因此把两个方向都
+  // 判成手机端（那样就没有唤醒器，消息没人取）。
+  const android =
+    fs.existsSync('/opt/dsh-app/phone/relay.cjs') ||
+    fs.existsSync('/var/lib/dsh-app/phone/bridge.json') ||
+    fs.existsSync('/sdcard')
+  const role = process.env.PHONE_BRIDGE_ROLE
+  if (role === 'desktop') return false
+  if (role === 'phone') return android
+  return android
 }
 
 // First non-internal IPv4, i.e. the address the phone has to dial.
