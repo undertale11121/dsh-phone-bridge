@@ -415,8 +415,13 @@ async function runAction(body) {
     // 面板上某个会话的「互联」开关：打开 = 配一个对端会话，关闭 = 删掉。
     let desktopId = String(body.desktopId || '').trim()
     if (!desktopId && !body.off) {
-      // 用户 m07416：不要自动新开对话了 —— 必须先在电脑上开好会话，再把它连起来。
-      throw new Error('先在电脑上开一个会话，再点这个开关。自动新开对话已经去掉了。')
+      // 用户 m04603：「一端打开互联另一端如果没有对应对话的话，新建对话的功能没实现」
+      // desktopId 没给 = 对端要求这边开一个新会话接上。
+      try {
+        desktopId = await createFreshSession()
+      } catch (error) {
+        throw new Error(`${error?.message || error}（先在这个会话里手动开一个新对话也行）`)
+      }
     }
     if (!desktopId) throw new Error('要指定是哪个电脑会话')
     const links = readLinks()
@@ -859,14 +864,50 @@ export function defaultModel() {
   return null
 }
 
-// 用户 m07416：「能自动创建对话了这一块就不要了」——原来这里有 createFreshSession()
-// 和 fulfilPendingSession()，会替用户凭空开会话（手机侧还会留一堆「未命名对话」）。
-// 现在整块删掉：要互联就先自己把会话开好，插件只负责把两个已存在的会话接起来。
+// DSH 不许插件凭空建会话，但宿主进程里有 agents.create（AgentLoop 的工厂）。
+// 两个坑：① 不给 meta.cwd 会落到 _no-cwd，App 打开就是「同步中断」；
+// ② 不给 agentOptions.provider/model 会报「has no provider/model」，一跑就出错。
+async function createFreshSession() {
+  const agents = agentsRef
+  if (!agents || typeof agents.create !== 'function') {
+    throw new Error('这台电脑上的 DSH 不支持自动新开会话（agents.create 不可用）')
+  }
+  const id = `session-${crypto.randomUUID()}`
+  const agentOptions = defaultModel() || {}
+  await agents.create({ sessionId: id, meta: { cwd: process.cwd() }, agentOptions })
+  return id
+}
+
+// 手机点了开关、但电脑上一个会话都没开：手机那边写了一张便签过来
+// （desktop.json.pendingNewSession），这里看到就开一个新会话并接上。
+async function fulfilPendingSession() {
+  const config = readConfig()
+  const pending = config.pendingNewSession
+  if (!pending || !pending.phoneId) return null
+  let id = ''
+  try {
+    id = await createFreshSession()
+  } catch (error) {
+    console.error(`[phone-bridge] 自动新开会话失败：${error?.message || error}`)
+    return null
+  }
+  const links = readLinks()
+  links[id] = { phoneId: String(pending.phoneId), at: new Date().toISOString() }
+  writeLinks(links)
+  patchConfig({ pendingNewSession: null })
+  return id
+}
 
 async function wakeTick(agents) {
   const config = readConfig()
   const wake = readWake(config)
   const state = readWakeState()
+  // 手机端要求「电脑没有会话时自动开一个」：先把便签兑现，再正常跑唤醒。
+  try {
+    await fulfilPendingSession()
+  } catch {
+    // 开不出来不能拖住唤醒
+  }
   // 先把开着的会话补进会话目录，session_list / session_note 才有的可选
   try {
     if (wake.enabled || config.token) syncRegistry(agents)
@@ -1336,15 +1377,36 @@ const readPeerLinks = () => {
   return out
 }
 
-// 手机侧按「来源电脑会话」找对应的手机会话：一个电脑会话配一个手机会话。
-// 映射记在 peer-links.json（手机本地）。**不再自动新建** —— 用户 m07416 明确去掉
-// 了「自动创建对话」：没有对应的会话就返回 null，让上层投给当前开着的会话，
-// 不再凭空造一个（那会在手机里留一堆「未命名对话」）。
+// 手机侧按「来源电脑会话」分身：一个电脑会话对应一个手机会话。
+// 第一次收到某个电脑会话的消息就新建一个，映射记在 peer-links.json（手机本地）。
 async function ensureDesktopSession(agents, live, desktopId) {
   const links = readPeerLinks() || {}
   const known = links[desktopId]
   if (known && live.some((row) => row.id === known)) return { id: known }
-  return null
+  if (typeof agents?.create !== 'function') throw new Error('这台引擎不支持自动新开会话（agents.create 不可用）')
+  // 映射里记着但会话已经不在了（应用重启过）——复用同一个 id 重新建，别让对话越开越多
+  const id = known && /^session-/.test(known) ? known : `session-${crypto.randomUUID()}`
+  // 会话头里必须有 cwd，否则 DSH 会把它丢进 _no-cwd，App 打开就是「同步中断」；
+  // agentOptions 还必须给 provider/model，否则一跑就是「has no provider/model」。
+  const cwd = live.map((row) => row && row.cwd).find((value) => typeof value === 'string' && value.startsWith('/')) || process.cwd()
+  const agentOptions = defaultModel() || {}
+  let created = id
+  try {
+    await agents.create({ sessionId: id, meta: { cwd }, agentOptions })
+  } catch (error) {
+    const message = String(error?.message || error)
+    // 会话文件已经在了（上次建过、现在没打开）。**绝不能重建** —— 重建会让每一轮轮询
+    // 都新开一个会话，同时把同一条消息反复重投（实测被投了 15 次以上）。
+    // 直接沿用这个 id：投得进去就投，投不进去由上层记失败并最终放弃。
+    if (/already exists/i.test(message)) {
+      writeJson(peerLinksPath(), { ...readPeerLinks(), [desktopId]: id })
+      return { id }
+    }
+    throw error
+  }
+  writeJson(peerLinksPath(), { ...readPeerLinks(), [desktopId]: created })
+  console.log(`[phone-bridge] 电脑会话 ${String(desktopId).replace(/^session-/, '').slice(0, 8)} → 手机会话 ${created.replace(/^session-/, '').slice(0, 8)}`)
+  return { id: created }
 }
 
 async function inboxTick(agents, lastReport) {
@@ -1478,12 +1540,10 @@ async function inboxTick(agents, lastReport) {
         try {
           target = await ensureDesktopSession(agents, live, src)
         } catch (error) {
-          fails.push(`找电脑会话 ${src.replace(/^session-/, '').slice(0, 8)} 对应的手机会话失败：${error?.message || error}`)
+          fails.push(`给电脑会话 ${src.replace(/^session-/, '').slice(0, 8)} 开分身失败：${error?.message || error}`)
           for (const item of rows) failedSeqs.push(Number(item.seq) || 0)
           continue
         }
-        // 没有对应的手机会话就投给当前开着的那个（用户 m07416：不要自动新开对话）。
-        if (!target) target = fallback
       } else {
         target = want ? matchSession(live, want) : fallback
       }
