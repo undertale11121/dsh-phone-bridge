@@ -1453,6 +1453,7 @@ async function inboxTick(agents, lastReport) {
 
   // 接收方向不节流：这些本来就是该手机看见的消息，压住只会让对话卡住。
 
+  const liveNow = listLiveSessions(agents)
   let collab = null
   let peerSessions = []
   let peerLinks = null
@@ -1474,6 +1475,21 @@ async function inboxTick(agents, lastReport) {
         writeJson(mirrorPath, peerLinks)
       }
     } catch {}
+  }
+  // 电脑上点了某个会话的「互联」但还没说话时，先把对应的手机会话建出来，
+  // 否则用户会觉得「点了没反应」，要等第一条消息才冒出新会话。
+  if (peerLinks && Object.keys(peerLinks).length) {
+    for (const [desktopId, entry] of Object.entries(peerLinks)) {
+      if (!desktopId || (entry && entry.phoneId)) continue
+      try {
+        const made = await ensureDesktopSession(agents, liveNow, desktopId)
+        if (made && made.id) {
+          console.log(`[phone-bridge] 预建手机会话：${desktopId.replace(/^session-/, '').slice(0, 8)} → ${String(made.id).replace(/^session-/, '').slice(0, 8)}`)
+        }
+      } catch (error) {
+        console.log(`[phone-bridge] 预建会话失败：${String(error?.message || error)}`)
+      }
+    }
   }
   // 电脑上开着的会话也记进本机目录，手机模型才有得点名
   if (peerSessions.length) {
