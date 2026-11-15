@@ -9,3 +9,15 @@
 2026-11-15T04:14:03.556Z installWake 正常返回
 2026-11-15T04:14:03.557Z 准备调用 installHostTools，isPhone=false，started=false，ctx.tools=undefined
 2026-11-15T04:14:03.558Z installHostTools 正常返回
+2026-11-15T04:14:35.221Z apply 进入 pid=16684 cwd=C:\Users\17735\.dsh\profiles\desktop dshHome= homedir=C:\Users\17735 inject=function
+2026-11-15T04:14:35.221Z 准备 installWake
+2026-11-15T04:14:35.222Z installWake 正常返回
+2026-11-15T04:14:35.223Z 准备调用 installHostTools，isPhone=false，started=false，ctx.tools=读取抛错：cannot get property "tools" without inject
+2026-11-15T04:14:35.223Z installHostTools 抛错：Error: cannot get property "tools" without inject
+    at installHostTools (file:///C:/Users/17735/.dsh/phone-bridge/web/index.js:2369:66)
+    at new apply (file:///C:/Users/17735/.dsh/phone-bridge/web/index.js:2526:5)
+    at Fiber.execute (file:///D:/c/DEEPSEEK/resources/app.asar/dsh/node_modules/@deepseek-ai/cordis/lib/index.js:362:24)
+    at file:///D:/c/DEEPSEEK/resources/app.asar/dsh/node_modules/@deepseek-ai/cordis/lib/index.js:436:34
+    at composeError (file:///D:/c/DEEPSEEK/resources/app.asar/dsh/node_modules/@deepseek-ai/cordis/lib/index.js:205:18)
+    at Fiber._execute (file:///D:/c/DEEPSEEK/resources/app.asar/dsh/node_modules/@deepseek-ai/cordis/lib/index.js:431:10)
+    at Fiber._reload (file:///D:/c/DEEPSEEK/resources/app.asar/dsh/node_modules/@deepseek-ai/cordis/lib/index.js:677:52)

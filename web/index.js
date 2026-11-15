@@ -2366,7 +2366,9 @@ function installHostTools(ctx) {
       /* 日志失败不影响主流程 */
     }
   }
-  note(`apply 里进入 installHostTools，ctx.tools=${ctx && typeof ctx.tools}（${ctx && ctx.tools && typeof ctx.tools.register}）`)
+  note('apply 里进入 installHostTools')
+  // cordis：没在 inject 里声明过的服务，读 ctx.tools 会抛
+  // cannot get property "tools" without inject —— 所以这里只能走 inject 那条路。
   const use = (service, how) => {
     note(`使用 ${how} 拿到的 service，register=${service && typeof service.register}`)
     if (!service || typeof service.register !== 'function') return
