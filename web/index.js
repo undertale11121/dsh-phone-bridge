@@ -2335,6 +2335,7 @@ async function registerHostTools(service) {
   }
   const tail = skipped.length ? `，跳过 ${skipped.length} 个：${skipped.join('；')}` : ''
   console.log(`[phone-bridge] 宿主工具 ${names.length}/${HOST_TOOLS.length} 个已注册${tail}`)
+  return names.length
 }
 
 let hostToolsStarted = false
@@ -2354,20 +2355,39 @@ async function ensureBridgeRunning() {
 // 工具面由 MCP 半提供，再注册一遍只会让模型看到两套同名工具。
 function installHostTools(ctx) {
   if (isPhone()) return
-  if (typeof ctx.inject !== 'function') return
   if (hostToolsStarted) return
   hostToolsStarted = true
-  ctx.inject(['tools'], (scope) => {
-    const service = scope?.tools
-    if (!service || typeof service.register !== 'function') {
-      console.error('[phone-bridge] 宿主工具没注册：拿不到 ctx.tools.register')
-      return
+  // 注册这一步是黑盒：宿主没有可读日志，出问题时只能看有没有工具出现。
+  // 落一份文件日志，重启后能直接判断卡在哪一环。
+  const note = (line) => {
+    try {
+      fs.appendFileSync(path.join(bridgeDir(), 'host-tools.log'), `${new Date().toISOString()} ${line}\n`)
+    } catch {
+      /* 日志失败不影响主流程 */
     }
+  }
+  note(`apply 里进入 installHostTools，ctx.tools=${ctx && typeof ctx.tools}（${ctx && ctx.tools && typeof ctx.tools.register}）`)
+  const use = (service, how) => {
+    note(`使用 ${how} 拿到的 service，register=${service && typeof service.register}`)
+    if (!service || typeof service.register !== 'function') return
     // cordis 的 inject 回调不等待返回值，异步异常会变成 unhandled rejection，自己吃掉。
     Promise.resolve()
       .then(() => ensureBridgeRunning())
       .then(() => registerHostTools(service))
-      .catch((error) => console.error(`[phone-bridge] 宿主工具注册失败：${error?.message || error}`))
+      .then((count) => note(`注册成功：${count} 个`))
+      .catch((error) => note(`注册失败：${error?.stack || error?.message || error}`))
+  }
+  if (ctx && ctx.tools && typeof ctx.tools.register === 'function') {
+    use(ctx.tools, 'ctx.tools 直取')
+    return
+  }
+  if (typeof ctx.inject !== 'function') {
+    note('ctx.inject 不可用，放弃')
+    return
+  }
+  ctx.inject(['tools'], (scope) => {
+    note(`inject 回调触发，scope.tools.register=${scope && scope.tools && typeof scope.tools.register}，键=${scope ? Object.keys(scope).slice(0, 12).join(',') : 'null'}`)
+    use(scope?.tools, "ctx.inject(['tools'])")
   })
 }
 
