@@ -2434,14 +2434,14 @@ async function readJsonBody(req) {
 
 export function apply(ctx) {
   // 探针：宿主里加载的到底是哪一份、跑到哪一步。绝对路径写死，绕开 dshHome 的不确定性。
-  try {
-    fs.appendFileSync(
-      'C:/Users/17735/.dsh/phone-bridge/apply-probe.log',
-      `${new Date().toISOString()} apply 进入 pid=${process.pid} cwd=${process.cwd()} dshHome=${process.env.DSH_HOME || ''} homedir=${os.homedir()} inject=${typeof ctx?.inject} keys=${ctx ? Object.keys(ctx).slice(0, 8).join(',') : 'null'}\n`,
-    )
-  } catch {
-    /* 探针失败无所谓 */
+  const trace = (line) => {
+    try {
+      fs.appendFileSync('C:/Users/17735/.dsh/phone-bridge/apply-probe.log', `${new Date().toISOString()} ${line}\n`)
+    } catch {
+      /* 探针失败无所谓 */
+    }
   }
+  trace(`apply 进入 pid=${process.pid} cwd=${process.cwd()} dshHome=${process.env.DSH_HOME || ''} homedir=${os.homedir()} inject=${typeof ctx?.inject}`)
   // webServer exists only under the web profile, and cordis has no optional
   // inject form, so the route rides a scoped inject of its own.
   if (typeof ctx.inject !== 'function') return
@@ -2485,7 +2485,13 @@ export function apply(ctx) {
       }
     },
   }
-  installWake(ctx)
+  trace('准备 installWake')
+  try {
+    installWake(ctx)
+    trace('installWake 正常返回')
+  } catch (error) {
+    trace(`installWake 抛错：${error?.stack || error?.message || error}`)
+  }
   // 手机侧的反方向：把电脑模型发的话直接投进手机上的会话。
   // 两端共用这一份代码，靠 isPhone() 分工，谁也不抢谁的活。
   try {
@@ -2495,20 +2501,12 @@ export function apply(ctx) {
   }
   // 桌面侧：同一批桥接工具在宿主半再注册一遍，好处是 execute 里能拿到准确的
   // 当前会话（MCP 协议不给），守卫不再靠 projcache mtime 猜。
-  // 探针：确认 installHostTools 到底被调用没有、抛没抛。绝对路径，不经 dshHome。
-  const probe = (line) => {
-    try {
-      fs.appendFileSync('C:/Users/17735/.dsh/phone-bridge/apply-probe.log', `${new Date().toISOString()} ${line}\n`)
-    } catch {
-      /* 探针失败无所谓 */
-    }
-  }
-  probe(`准备调用 installHostTools，isPhone=${isPhone()}，started=${hostToolsStarted}，typeof ctx.tools=${typeof ctx?.tools}`)
+  trace(`准备调用 installHostTools，isPhone=${isPhone()}，started=${hostToolsStarted}，typeof ctx.tools=${typeof ctx?.tools}`)
   try {
     installHostTools(ctx)
-    probe('installHostTools 正常返回')
+    trace('installHostTools 正常返回')
   } catch (error) {
-    probe(`installHostTools 抛错：${error?.stack || error?.message || error}`)
+    trace(`installHostTools 抛错：${error?.stack || error?.message || error}`)
     console.error(`[phone-bridge] 宿主工具跳过: ${error}`)
   }
   try {
