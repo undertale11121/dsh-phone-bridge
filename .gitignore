@@ -49,3 +49,6 @@ dist/
 # 调试日志（不进版本库）
 apply-probe.log
 host-tools.log
+.s.py
+.insp.py
+.curfix.py
