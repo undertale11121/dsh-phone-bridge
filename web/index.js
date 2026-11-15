@@ -681,7 +681,11 @@ export async function wakeSession(agents, sessionId, text, mode = 'queue', optio
     busySince.set(sessionId, since)
     const stuckFor = Date.now() - since
     if (stuckFor < BUSY_TIMEOUT_MS) {
-      throw new Error(`会话 ${shortSession(sessionId)}… 正忙（${status}），这条消息等它空下来再投`)
+      // 忙 = 这一批先放下，不是「投递失败」。调用方据此把游标推过去，
+      // 否则每 3 秒重投一次、每次都唤醒对方——对端看到的就是同一条消息刷屏。
+      const busy = new Error(`会话 ${shortSession(sessionId)}… 正忙（${status}），这条消息等它空下来再投`)
+      busy.busy = true
+      throw busy
     }
     console.log(`[phone-bridge] 会话 ${shortSession(sessionId)}… 报忙已 ${Math.round(stuckFor / 1000)}s，状态多半卡住了，这次强行投递`)
     busySince.delete(sessionId)
@@ -1005,7 +1009,14 @@ async function wakeTick(agents) {
       for (const item of items) sentSeqs.push(Number(item.seq) || 0)
     } catch (error) {
       state.lastError = String(error?.message || error)
-      for (const item of items) failedSeqs.push(Number(item.seq) || 0)
+      // 「对方正忙」不算投递失败：消息留在工作台，游标照推，不然每 3 秒重投
+      // 一次、每次都把对方唤醒一轮，表现就是同一条消息反复出现（对端实测报过）。
+      const quiet = Boolean(error?.busy)
+      for (const item of items) {
+        const seq = Number(item.seq) || 0
+        if (quiet) skipped.push(seq)
+        else failedSeqs.push(seq)
+      }
       // 原来这里是 break：一个目标投不进去，排在它后面的组就永远没机会了，
       // 声音最大的那个坏会话会把整条链路堵死（代码审查发现）。
       continue
