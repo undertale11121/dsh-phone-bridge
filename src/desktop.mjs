@@ -537,11 +537,14 @@ class DesktopBridge {
       return sendJson(res, 200, { ok: true })
     }
     if (req.method === 'POST' && route === '/call') {
-      const body = await readBody(req)
+      const body = await readBody(req).catch(() => ({}))
       if (!this.checkAuth(body)) return sendJson(res, 401, { ok: false })
       this.markSeen(body?.auth?.id)
       try {
-        const result = await this.handleCall(String(body?.op || ''), body?.args || {})
+        // 上游（宿主半）知道「是哪个电脑会话在说话」时会把 sessionId 带下来；
+        // 守卫优先用它。拿不到就传空串，由 gateMessage 按「不能误拦」处理，
+        // 绝不在 desktop.mjs 里用 projcache mtime 猜会话。
+        const result = await this.handleCall(String(body?.op || ''), body?.args || {}, String(body?.sessionId || ''))
         return sendJson(res, 200, { ok: true, ...result })
       } catch (error) {
         return sendJson(res, 200, { ok: false, error: String(error?.message || error) })
@@ -915,7 +918,13 @@ class DesktopBridge {
 
   // What the phone may ask this computer to do. Same vocabulary as bridge.call()
   // in the other direction, so neither side is "the tool" of the other.
-  async handleCall(op, args) {
+  async handleCall(op, args, sessionId = '') {
+    // 互联守卫：sessionId 是上游告诉我们的「真实当前会话」，比按 projcache mtime
+    // 猜出来的准得多。为空时也不回退 newestDesktopSessionId()——猜错会误拦。
+    if (process.env.PHONE_BRIDGE_NO_GATE !== '1') {
+      const gate = gateMessage(op, readLinksFile() || {}, sessionId || '')
+      if (gate) throw new Error(gate)
+    }
     // 手机端是 Flutter 原生界面，会话头部的 web 插槽在那边渲染不出来，
     // 所以手机面板上的开关走这条 MCP 通道，真源仍写在电脑的 desktop.json.links。
     if (op === 'link') {
@@ -989,6 +998,19 @@ class DesktopBridge {
         // 记日志失败不能影响文件本身
       }
       return { text: `已写入 ${dest}（${humanSize(buf.length)}）`, path: dest, size: buf.length }
+    }
+    // 宿主半（web/index.js 的 installHostTools）发来的调用：op 就是工具名。
+    // 它从 exec.agent 拿到的是真实会话 id，比 MCP 半可靠，守卫用它才有意义。
+    const toolHandler = this.toolHandlers?.[op]
+    if (typeof toolHandler === 'function') {
+      if (process.env.PHONE_BRIDGE_NO_GATE !== '1') {
+        const gate = gateMessage(op, readLinksFile() || {}, sessionId || '')
+        if (gate) throw new Error(gate)
+      }
+      const value = await toolHandler(args)
+      // handlers 有的返回 {text}，有的直接返回字符串；统一包成 {text} 再交给 /call 序列化，
+      // 否则字符串会被 JSON 化成 {0:'在',1:'线',...} 这种字符索引对象。
+      return typeof value === 'string' ? { text: value } : value
     }
     throw new Error(`不认识的操作：${op}`)
   }
@@ -2132,6 +2154,11 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
     phone_fetch_file: handlers.peer_get,
   })
 
+  // 宿主半（web/index.js 的 installHostTools）注册工具后，execute 里会 POST /call 过来，
+  // op 就是工具名。把同一份 handlers 挂到 bridge 上，handleCall 才能按名字分发 ——
+  // 这样宿主半和 MCP 半共用一份实现，不会出现两套逻辑各改各的。
+  bridge.toolHandlers = handlers
+
   serveMcp({
     name: 'phone-bridge',
     version: '0.3.0',
@@ -2154,9 +2181,10 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
       // 只挡跨端工具；配置/诊断类（bridge_*、phone_bridge_*）照常可用，否则出问题时连诊断都做不了。
       if (process.env.PHONE_BRIDGE_NO_GATE !== '1') {
         // caller.sessionId 是 DSH 通过 MCP 的 _meta 带回来的「正在说话的那个会话」，
-        // 比扫 projcache 猜 mtime 准得多；只有 caller 缺失时才退化成推断
-        // （多会话并行、刚切会话、新会话还没有 projcache 时推断会判错）。
-        const current = caller?.sessionId || newestDesktopSessionId()
+        // 这是唯一可靠的来源。拿不到时传空串交给 gateMessage 走「宁可松也不误拦」，
+        // 不再退化成 newestDesktopSessionId() 按 projcache mtime 猜——猜错会话会
+        // 把明明开了互联的人挡在外面（用户实测在 A 会话点开关、却被判成 B 没开）。
+        const current = caller?.sessionId || ''
         const gate = gateMessage(name, readLinksFile() || {}, current)
         if (gate) throw new Error(gate)
       }
@@ -2264,19 +2292,26 @@ function defaultPeerTarget() {
 }
 
 // 会话级开关：只有「正在说话的那个会话」开了互联，跨端工具才放行。
-// MCP 协议没有 caller，所以 current 是推断出来的（见 newestDesktopSessionId）。
-// 扫不到任何会话时退化成「只要有一处开了就放行」，否则连排查都做不了。
+// current 由调用方传入「准确的当前会话 id」（MCP 的 caller.sessionId，或 /call 的
+// 上游透传）；拿不到时绝不按 projcache mtime 猜——猜错会误拦已经开了互联的人。
 export function gateMessage(name, links, current) {
   const tool = String(name || '')
   // phone_bridge_* 是配置/诊断工具（看状态、开桥接、拿配对串），任何时候都得能用，
   // 否则出问题时连「怎么开互联」都没法查。注意它同样以 phone_ 开头，要排在前面。
   if (/^phone_bridge_/.test(tool)) return ''
   if (!/^(peer_|phone_|agent_|session_)/.test(tool)) return ''
-  // MCP 协议不带 caller，current 只能是推断（projcache 里 mtime 最新的那个），实测经常
-  // 猜错：用户在 A 会话，推断成 B，于是点了开关还被拦。宁可判松一点，也不能把已经开了
-  // 互联的人挡在外面 —— 所以只看「有没有任何一个会话开着互联」。
-  if (Object.keys(links || {}).length > 0) return ''
-  return '还没有任何会话打开互联，互联工具现在不可用。在任意一个会话顶部点「🔗 互联」打开，开了之后这些工具立刻能用。'
+  // 1) 一个会话都没开互联：拦，并告诉用户去点开关。
+  if (!links || Object.keys(links).length === 0) {
+    return '还没有任何会话打开互联，互联工具现在不可用。在任意一个会话顶部点「🔗 互联」打开，开了之后这些工具立刻能用。'
+  }
+  // 2) 拿不到「正在说话的那个会话」：放行。推断不可靠，不能误拦。
+  if (!current) return ''
+  // 3) 这个会话确实开了互联：放行。
+  if (links[current]) return ''
+  // 4) 别的会话开着、当前会话没开：拦。走到这里说明 current 是可信的（宿主半从
+  //    exec.agent 拿到的真实会话 id），不是推断值，所以可以精确判定。
+  //    MCP 半拿不到 caller 时会在上一段就放行，不会被误拦。
+  return '这个会话没开互联，互联工具现在不可用。在会话顶部点「🔗 互联」打开，开了之后这些工具立刻能用。'
 }
 
 // 模型调用工具时不知道自己开在哪个会话里（MCP 协议没有 caller），所以「这条消息是从

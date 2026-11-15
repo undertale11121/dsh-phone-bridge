@@ -1792,6 +1792,576 @@ function profilesWithThisBundle() {
   return found
 }
 
+// ── 宿主工具：把桥接工具在宿主进程里再注册一遍 ─────────────────────────────
+//
+// 为什么要有这一层：MCP 协议不告诉服务端「这次调用来自哪个会话」。MCP 半
+// （src/desktop.mjs 的 serveMcp）拿不到 caller.sessionId，跨端守卫只能扫
+// projcache 按 mtime 猜当前会话，猜错就会把已经开了互联的人挡在外面。宿主半
+// 不一样：`execute(args, exec)` 里的 `exec.agent.session` 就是准确的当前会话。
+// 所以同一批工具在宿主半再注册一次，调用时把 sessionId 一起带给桥接进程。
+//
+// 一次调用 = 一次 HTTP 往返 `POST /call {op, args, sessionId}`：手机连接状态只
+// 有桥接进程里有，宿主半不能自己去碰；桥接没在跑时给一句能照着做的错误。
+//
+// 工具表是 src/desktop.mjs `desktopTools()` 的副本：web 半会被单独拷进 profile
+// 的 node_modules（见文件头注释），import 不了 ../src/*，只能内联。改 src 里的
+// 工具名/描述/参数时，这张表要跟着改，否则两边对不上。
+const HOST_TOOLS = [
+  {
+    "name": "peer_info",
+    "description": "查看手机端（dsh-go 所在设备）是否在线、设备信息；未连接时返回配对串，把配对串发到手机对话里让对方执行 bridge_pair 即可。",
+    "parameters": {}
+  },
+  {
+    "name": "bridge_setup",
+    "description": "打开图形化配置页（浏览器地址）：查看手机/电脑连接状态、配对串、自动发现、权限开关。用户问「怎么配」「在哪设置」时给出这个地址即可。",
+    "parameters": {}
+  },
+  {
+    "name": "agent_list",
+    "description": "列出工作台上可以对话的 agent：电脑模型、手机模型，以及双方启动的子智能体，带 id 和是否在跑。",
+    "parameters": {}
+  },
+  {
+    "name": "agent_send",
+    "description": "给指定 agent 发消息（不执行任务）：to 写 agent_list 里的 id，省略/写 all 就是广播给所有人。适合找子智能体、给某个 agent 留言。level 标重要性，对方唤醒语里会带对应符号。",
+    "parameters": {
+      "to": {
+        "type": "string",
+        "description": "目标 agent id，例如 phone、review-1；省略=广播"
+      },
+      "text": {
+        "type": "string",
+        "description": "要说的内容",
+        "required": true
+      },
+      "from": {
+        "type": "string",
+        "description": "发起方是谁：填你自己会话的短 id（session_list 里带「（当前）」那条）。对端靠它决定投进哪个对话、或为你单独开一个。可不填"
+      },
+      "level": {
+        "type": "string",
+        "description": "重要性：urgent(❗等你回) / question(❓要你决定) / alert(⚠️出问题) / done(✅做完了) / report(📋进度汇报不用回)；不写=普通"
+      }
+    }
+  },
+  {
+    "name": "agent_converse",
+    "description": "给指定 agent 发一句并等它回话（最多 waitSeconds 秒，默认 120）。对方是子智能体时它会自己动手并回报；没有回话就返回已有消息，不假装成功。",
+    "parameters": {
+      "to": {
+        "type": "string",
+        "description": "目标 agent id；省略=发给手机模型"
+      },
+      "text": {
+        "type": "string",
+        "description": "要说的话",
+        "required": true
+      },
+      "waitSeconds": {
+        "type": "number",
+        "description": "最多等多少秒，5–600，默认 120"
+      }
+    }
+  },
+  {
+    "name": "agent_read",
+    "description": "读工作台对话（广播 + 发给你的 + 你说的），可选只看某段之后的新消息。",
+    "parameters": {
+      "since": {
+        "type": "number",
+        "description": "从第几条之后开始，默认 0"
+      },
+      "limit": {
+        "type": "number",
+        "description": "最多几条，默认 40"
+      }
+    }
+  },
+  {
+    "name": "agent_spawn",
+    "description": "像子智能体一样加一个自己干活的 agent：给它名字和任务，它会独立运行（可用同一套工作台工具），完成后把结果发回来。host=desktop 在本机跑，host=phone 在手机上跑。",
+    "parameters": {
+      "name": {
+        "type": "string",
+        "description": "名字，例如 构建手、审查员"
+      },
+      "task": {
+        "type": "string",
+        "description": "要它做的事，写清楚验收标准",
+        "required": true
+      },
+      "host": {
+        "type": "string",
+        "description": "在哪台机器上跑，默认 desktop",
+        "enum": [
+          "desktop",
+          "phone"
+        ]
+      }
+    }
+  },
+  {
+    "name": "agent_stop",
+    "description": "停掉一个子智能体（内建的两个模型不能这样停）。",
+    "parameters": {
+      "id": {
+        "type": "string",
+        "description": "agent id",
+        "required": true
+      }
+    }
+  },
+  {
+    "name": "session_list",
+    "description": "列出电脑上用过互联工具的会话：id 前 8 位、名字、用途、项目、调用次数、最近活跃。想知道「该唤醒哪个会话」时先看这里。",
+    "parameters": {}
+  },
+  {
+    "name": "session_note",
+    "description": "给一个会话写清它是干什么的（用途/项目/名字），之后唤醒可以按用途选。target 省略或写 current = 正在调用你的这个会话。",
+    "parameters": {
+      "target": {
+        "type": "string",
+        "description": "会话 id、id 前几位、名字，或 current（默认）"
+      },
+      "name": {
+        "type": "string",
+        "description": "给会话起个短名字，比如「登录页」"
+      },
+      "purpose": {
+        "type": "string",
+        "description": "这个会话在做什么，一两句"
+      },
+      "project": {
+        "type": "string",
+        "description": "项目名，可选"
+      }
+    }
+  },
+  {
+    "name": "peer_say",
+    "description": "给对端模型发一句话，并立刻唤醒它一次（不执行任务，只是说话）：对方那边的收件器会在几秒内把这条投进它开着的会话。默认发给对端模型本人；要发给某个具体会话就写 phone:<会话名> / desktop:<会话名>。level 标重要性，对方的唤醒语里会带上对应符号（❗❓⚠️✅📋）。",
+    "parameters": {
+      "text": {
+        "type": "string",
+        "description": "要对对方模型说的话",
+        "required": true
+      },
+      "to": {
+        "type": "string",
+        "description": "收件人：省略=对端模型；也可写 phone / phone:<会话名> / desktop / desktop:<会话名>"
+      },
+      "from": {
+        "type": "string",
+        "description": "发起方是谁：填你自己会话的短 id（session_list 里带「（当前）」那条）。想让对端为你这个会话单独开一个对话时必须带上，对端会按它分身"
+      },
+      "level": {
+        "type": "string",
+        "description": "这条有多要紧：urgent(❗等你回) / question(❓要你决定) / alert(⚠️出问题) / done(✅做完了) / report(📋进度汇报不用回)；不写=普通"
+      }
+    }
+  },
+  {
+    "name": "peer_converse",
+    "description": "发一条消息给手机模型，然后等它回话（最多 waitSeconds 秒）。用来跟手机那边一轮一轮商量：你问、它答、它也可以反问。等不到回复会把消息留在工作台上，之后用 peer_read 再看。",
+    "parameters": {
+      "text": {
+        "type": "string",
+        "description": "要对手机模型说的话",
+        "required": true
+      },
+      "waitSeconds": {
+        "type": "number",
+        "description": "最多等多少秒，默认 120，最多 600"
+      }
+    }
+  },
+  {
+    "name": "peer_read",
+    "description": "读共享工作台上最近的对话（电脑模型和手机模型说的话都在里面）。配合 peer_say / peer_converse 使用。",
+    "parameters": {
+      "since": {
+        "type": "number",
+        "description": "从哪一条之后开始读，默认 0（从头）"
+      },
+      "limit": {
+        "type": "number",
+        "description": "最多几条，默认 40"
+      }
+    }
+  },
+  {
+    "name": "phone_tools",
+    "description": "列出手机端可用的操控工具（截图、点按、打开应用、查询应用列表等）及其参数说明。",
+    "parameters": {}
+  },
+  {
+    "name": "phone_tool",
+    "description": "在手机上执行一个操控工具。常用 name：screen（读屏幕，image:true 可请求截图）、tap（点元素，需 screen 屏号+元素号）、tap_xy（按坐标点）、type（输入文字）、key（back/home/recents/notifications）、open（开应用或链接）、apps（列应用）、scroll、intent（闹钟/日程/导航等）、notify、clipboard、collect（长列表自动收集）、handoff（交给用户操作）。先用 phone_tools 查看当前可用的工具与参数。",
+    "parameters": {
+      "name": {
+        "type": "string",
+        "description": "手机工具名，如 screen",
+        "required": true
+      },
+      "arguments": {
+        "type": "object",
+        "description": "该工具的参数，如 {\"image\":true}"
+      }
+    }
+  },
+  {
+    "name": "peer_run",
+    "description": "在手机的 Linux 环境里执行一条 shell 命令（bash -lc），返回 stdout/stderr/退出码。适合跑测试、看日志、装依赖。",
+    "parameters": {
+      "command": {
+        "type": "string",
+        "description": "要执行的命令",
+        "required": true
+      },
+      "cwd": {
+        "type": "string",
+        "description": "工作目录，默认 /root/workspace"
+      },
+      "timeoutMs": {
+        "type": "number",
+        "description": "超时毫秒，默认 120000"
+      }
+    }
+  },
+  {
+    "name": "peer_put",
+    "description": "把桌面上的一个文件推到手机（适合把网页、APK、脚本送过去测试）。",
+    "parameters": {
+      "path": {
+        "type": "string",
+        "description": "桌面本地文件路径",
+        "required": true
+      },
+      "destPath": {
+        "type": "string",
+        "description": "手机目标路径，默认 /sdcard/Download/DSH-Go/<文件名>"
+      }
+    }
+  },
+  {
+    "name": "peer_get",
+    "description": "把手机上的文件取回桌面（截图、日志、测试产物）。",
+    "parameters": {
+      "path": {
+        "type": "string",
+        "description": "手机上的文件路径",
+        "required": true
+      },
+      "destPath": {
+        "type": "string",
+        "description": "桌面保存路径，默认当前目录下同名文件"
+      }
+    }
+  },
+  {
+    "name": "phone_send_dir",
+    "description": "把桌面上的整个项目目录打包推到手机（自动跳过 node_modules/.git/build 等），适合把网页源码送过去构建、起服务、测试。",
+    "parameters": {
+      "path": {
+        "type": "string",
+        "description": "桌面目录路径",
+        "required": true
+      },
+      "destPath": {
+        "type": "string",
+        "description": "手机目标目录，默认 /sdcard/Download/DSH-Go/<目录名>"
+      },
+      "exclude": {
+        "type": "array",
+        "description": "额外排除的相对路径",
+        "items": {
+          "type": "string"
+        }
+      },
+      "maxFiles": {
+        "type": "number",
+        "description": "最多发送多少个文件，默认 400"
+      }
+    }
+  },
+  {
+    "name": "phone_build_apk",
+    "description": "让手机自己构建 APK（在手机 Linux 环境里执行构建命令，如 gradle assembleDebug / ./gradlew assembleDebug），构建完自动把 .apk 取回桌面。适合电脑上没有 Android SDK 时。",
+    "parameters": {
+      "command": {
+        "type": "string",
+        "description": "在手机上执行的构建命令",
+        "required": true
+      },
+      "cwd": {
+        "type": "string",
+        "description": "手机上的项目目录"
+      },
+      "destPath": {
+        "type": "string",
+        "description": "APK 在桌面的保存路径，默认当前目录下同名文件"
+      },
+      "timeoutMinutes": {
+        "type": "number",
+        "description": "最多等几分钟，默认 20"
+      }
+    }
+  },
+  {
+    "name": "phone_install",
+    "description": "把 APK 装到手机上：可先传本地文件（path），也可以给手机上的路径（remotePath），然后自动打开系统安装器并点过确认。遇到「未知来源」授权或密码框时会如实告诉你需要手动处理。装完可用 packageName 核对是否装好。",
+    "parameters": {
+      "path": {
+        "type": "string",
+        "description": "桌面上的 APK 路径（可选，给了就自动传到手机）"
+      },
+      "remotePath": {
+        "type": "string",
+        "description": "手机上已有的 APK 路径（可选）"
+      },
+      "packageName": {
+        "type": "string",
+        "description": "装完要核对的包名（可选）"
+      },
+      "auto": {
+        "type": "boolean",
+        "description": "是否自动点确认，默认 true；false 只打开安装器"
+      },
+      "destPath": {
+        "type": "string",
+        "description": "APK 传到手机的路径，默认 /sdcard/Download/DSH-Go/<文件名>"
+      }
+    }
+  },
+  {
+    "name": "phone_test",
+    "description": "一个工具完成「手机模型自测」：把目标、网页地址或 APK 路径交给手机模型，它自己开 App/浏览器、看截图、点按、跑命令，最后交回测试报告和截图（自动取回桌面）。写代码改一遍后直接再调一次即可形成自动循环。传 session 名（如「登录页」）可让同一项目的多次测试接在同一个手机会话里。",
+    "parameters": {
+      "goal": {
+        "type": "string",
+        "description": "测试目标，例如「打开首页，点登录，用错误密码，应提示错误且不崩溃」",
+        "required": true
+      },
+      "app": {
+        "type": "string",
+        "description": "要测的应用：包名或应用名（可选）"
+      },
+      "apkPath": {
+        "type": "string",
+        "description": "要测的 APK 在手机上的路径（可选）"
+      },
+      "url": {
+        "type": "string",
+        "description": "要测的网页地址（可选）"
+      },
+      "instructions": {
+        "type": "string",
+        "description": "额外要求，例如「至少截 3 张图」"
+      },
+      "session": {
+        "type": "string",
+        "description": "项目会话名，同名共用同一个手机会话，默认 default"
+      },
+      "sessionId": {
+        "type": "string",
+        "description": "直接指定会话 id（可选）"
+      },
+      "artifactsDir": {
+        "type": "string",
+        "description": "截图在桌面的保存目录，默认 ./phone-artifacts"
+      },
+      "timeoutMinutes": {
+        "type": "number",
+        "description": "最多等几分钟，默认 20"
+      }
+    }
+  },
+  {
+    "name": "phone_shell_target",
+    "description": "在指定的一台对端机器上执行 shell（对方也是 dsh-phone-bridge 时就让它自己跑，否则经长轮询交给手机）。host 写 host:port；对端列表见 peer_info。",
+    "parameters": {
+      "host": {
+        "type": "string",
+        "description": "对端地址 host:port，例如 10.78.244.169:9000",
+        "required": true
+      },
+      "command": {
+        "type": "string",
+        "description": "要执行的命令",
+        "required": true
+      },
+      "cwd": {
+        "type": "string",
+        "description": "工作目录"
+      },
+      "timeoutMs": {
+        "type": "number",
+        "description": "超时毫秒，默认 120000"
+      }
+    }
+  },
+  {
+    "name": "bridge_log",
+    "description": "查看后台桥接服务的最近日志（手机连接、任务、错误都在这里）。",
+    "parameters": {
+      "lines": {
+        "type": "number",
+        "description": "最多多少行，默认 60"
+      }
+    }
+  },
+  {
+    "name": "bridge_start",
+    "description": "确保后台桥接服务在运行（不依赖当前对话），返回配对串与监听端口。手机还没连上、或换了一台电脑时先调它。",
+    "parameters": {}
+  },
+  {
+    "name": "phone_ask",
+    "description": "把一段任务交给手机上的模型（它有自己的手机操控、shell 能力）去执行，返回它的最终答复。同一个项目反复派活用 session 名字（如 session:\"登录页\"），它会自动续着同一个手机会话，不会每次新开；不传 session 就用专用会话 default。",
+    "parameters": {
+      "task": {
+        "type": "string",
+        "description": "交给手机模型的任务，写清楚要做什么、成功标准",
+        "required": true
+      },
+      "cwd": {
+        "type": "string",
+        "description": "手机上的工作目录，默认 /root/workspace"
+      },
+      "session": {
+        "type": "string",
+        "description": "项目会话名，例如「登录页」；同名共用同一个手机会话，默认 default"
+      },
+      "sessionId": {
+        "type": "string",
+        "description": "直接指定会话 id（可选，一般用 session 名字即可）"
+      },
+      "timeoutMinutes": {
+        "type": "number",
+        "description": "最多等几分钟，默认 15"
+      }
+    }
+  }
+]
+
+// 工具可能跑很久（phone_test 要开手机模型、peer_run 要等远端），超时跟桥接侧
+// 的 toolTimeoutMs 对齐，不能用面板那 8 秒。
+const hostToolTimeoutMs = () => Number(readConfig().toolTimeoutMs) || 1800000
+
+async function callBridgeTool(name, args, sessionId) {
+  const config = readConfig()
+  const timeoutMs = hostToolTimeoutMs()
+  let out
+  try {
+    out = await bridgePost(
+      `http://127.0.0.1:${config.port}`,
+      '/call',
+      config.token,
+      {
+        // 桥接侧按 op 找工具 handler；sessionId 给守卫用，也决定了投递到哪个会话。
+        op: name,
+        args: args && typeof args === 'object' ? args : {},
+        sessionId: String(sessionId || ''),
+      },
+      // HTTP 比工具本身多给 15 秒：让工具自己的超时先生效，错误信息更具体。
+      timeoutMs + 15_000,
+    )
+  } catch (error) {
+    throw new Error(`桥接服务没在跑：${error?.message || error}`)
+  }
+  if (out && out.ok === false) throw new Error(String(out.error || `${name} 执行失败`))
+  return out || {}
+}
+
+const HOST_TOOL_OUTPUT = {
+  schema: { type: 'object', additionalProperties: true },
+  render: (_args, value) => [{ type: 'text', text: String(value?.text ?? '') }],
+}
+
+// defineTool 从哪来：先看 tools 服务自己有没有（cordis 服务的形状不止一种），
+// 再退到官方包 @deepseek-ai/dsh-tools —— 已装插件 dsh-find-plugins、
+// dsh-m 都是 `import { defineTool } from '@deepseek-ai/dsh-tools'`，宿主加载器
+// 解得开这个 peer 依赖。这里用动态 import 包一层：解不开时只丢这一批工具，
+// 不影响面板本身（静态 import 失败会让整个 web 半加载不起来）。
+async function resolveDefineTool(service) {
+  if (service && typeof service.defineTool === 'function') {
+    return { defineTool: service.defineTool.bind(service), from: 'ctx.tools.defineTool' }
+  }
+  try {
+    const mod = await import('@deepseek-ai/dsh-tools')
+    if (mod && typeof mod.defineTool === 'function') return { defineTool: mod.defineTool, from: '@deepseek-ai/dsh-tools' }
+    return { defineTool: null, reason: '@deepseek-ai/dsh-tools 里没有 defineTool 导出' }
+  } catch (error) {
+    return { defineTool: null, reason: `@deepseek-ai/dsh-tools 加载失败：${error?.message || error}` }
+  }
+}
+
+async function registerHostTools(service) {
+  const found = await resolveDefineTool(service)
+  if (!found.defineTool) {
+    console.error(`[phone-bridge] 宿主工具没注册：defineTool 两个来源都不可用（${found.reason}）`)
+    return
+  }
+  const timeoutMs = hostToolTimeoutMs()
+  const names = []
+  const skipped = []
+  for (const spec of HOST_TOOLS) {
+    try {
+      service.register(
+        found.defineTool({
+          name: spec.name,
+          description: spec.description,
+          parameters: spec.parameters || {},
+          output: HOST_TOOL_OUTPUT,
+          timeoutMs,
+          async execute(args, exec) {
+            // 这一行就是这一层存在的理由：MCP 给不了，宿主给得了。
+            const sessionId = String(exec?.agent?.session?.id || exec?.agent?.id || '')
+            const result = await callBridgeTool(spec.name, args, sessionId)
+            const text = String(result?.text ?? '')
+            const images = Array.isArray(result?.images) ? result.images.length : 0
+            // 截图这条链路暂时带不过来（宿主工具的 render 只回文本），如实说一声，
+            // 别让模型以为「没有截图」。
+            if (!images) return { text }
+            return { text: `${text}\n\n（另有 ${images} 张图片没带过来，要看截图请改用 MCP 工具）` }
+          },
+        }),
+      )
+      names.push(spec.name)
+    } catch (error) {
+      // 同名工具已经注册过时不要让整批失败（MCP client 那边是 mcp__<server>__ 前缀，
+      // 正常撞不上，但别的插件可能提前占了裸名）。
+      skipped.push(`${spec.name}（${error?.message || error}）`)
+    }
+  }
+  const tail = skipped.length ? `，跳过 ${skipped.length} 个：${skipped.join('；')}` : ''
+  console.log(`[phone-bridge] 宿主工具 ${names.length}/${HOST_TOOLS.length} 个已注册（defineTool 来自 ${found.from}）${tail}`)
+}
+
+let hostToolsStarted = false
+
+// 宿主半注册工具的意义是「拿得到准确的当前会话」，所以只在桌面侧做；手机上
+// 工具面由 MCP 半提供，再注册一遍只会让模型看到两套同名工具。
+function installHostTools(ctx) {
+  if (isPhone()) return
+  if (typeof ctx.inject !== 'function') return
+  if (hostToolsStarted) return
+  hostToolsStarted = true
+  ctx.inject(['tools'], (scope) => {
+    const service = scope?.tools
+    if (!service || typeof service.register !== 'function') {
+      console.error('[phone-bridge] 宿主工具没注册：拿不到 ctx.tools.register')
+      return
+    }
+    // cordis 的 inject 回调不等待返回值，异步异常会变成 unhandled rejection，自己吃掉。
+    Promise.resolve()
+      .then(() => registerHostTools(service))
+      .catch((error) => console.error(`[phone-bridge] 宿主工具注册失败：${error?.message || error}`))
+  })
+}
+
 /** 幂等地把引擎行补进每个装了本 bundle 的 profile，返回改过的文件。 */
 export function installEngineRow() {
   if (process.env[AUTOPATCH_ENV] === '1') return []
@@ -1884,6 +2454,13 @@ export function apply(ctx) {
     installInbox(ctx)
   } catch (error) {
     console.error(`[phone-bridge] 收件器跳过: ${error}`)
+  }
+  // 桌面侧：同一批桥接工具在宿主半再注册一遍，好处是 execute 里能拿到准确的
+  // 当前会话（MCP 协议不给），守卫不再靠 projcache mtime 猜。
+  try {
+    installHostTools(ctx)
+  } catch (error) {
+    console.error(`[phone-bridge] 宿主工具跳过: ${error}`)
   }
   try {
     installEngineRow()

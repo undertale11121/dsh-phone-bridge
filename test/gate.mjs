@@ -20,8 +20,8 @@ const links = { 'session-aaa': { phoneId: 'session-bbb', at: '2026-11-15T00:00:0
 check('开了互联时 peer_say 放行', gateMessage('peer_say', links, 'session-aaa'), '')
 check('开了互联时 phone_shot 放行', gateMessage('phone_screenshot', links, 'session-aaa'), '')
 
-// 3) 别的会话开了 -> 放行（MCP 拿不到 caller，推断不可靠，宁可判松也不误拦）
-check('只要有会话开着互联就放行', Boolean(gateMessage('peer_say', links, 'session-zzz')), false)
+// 3) 拿到了可信会话（宿主半 exec.agent），别的会话开着不算数 -> 拦住
+check('别的会话开了不算当前会话', Boolean(gateMessage('peer_say', links, 'session-zzz')), true)
 
 // 4) 诊断类永远放行
 check('bridge_health 不拦', gateMessage('bridge_health', {}, 'session-aaa'), '')
