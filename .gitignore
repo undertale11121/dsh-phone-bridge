@@ -45,3 +45,7 @@ desktop.lock
 thread-*.patch.yml
 headless.patch.yml
 dist/
+
+# 调试日志（不进版本库）
+apply-probe.log
+host-tools.log
