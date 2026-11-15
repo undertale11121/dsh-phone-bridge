@@ -2322,8 +2322,10 @@ async function registerHostTools(service) {
           // 截图这条链路暂时带不过来（宿主工具的 render 只回文本），如实说一声，
           // 别让模型以为「没有截图」。
           const body = images ? `${text}\n\n（另有 ${images} 张图片没带过来，要看截图请改用 MCP 工具）` : text
-          // 必须回 content block 数组：回裸对象/字符串会被判成「没有内容」。
-          return [{ type: 'text', text: body }]
+          // execute 的返回值要符合 output.schema（对象）；渲染成 content block
+          // 是 render(args, value) 的活。在这里回数组会被判成
+          // 'tool "x" returned invalid output: "value" must be an object'。
+          return { ok: true, text: body }
         },
       })
       names.push(spec.name)
