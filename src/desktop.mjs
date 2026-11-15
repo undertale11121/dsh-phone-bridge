@@ -2272,10 +2272,11 @@ export function gateMessage(name, links, current) {
   // 否则出问题时连「怎么开互联」都没法查。注意它同样以 phone_ 开头，要排在前面。
   if (/^phone_bridge_/.test(tool)) return ''
   if (!/^(peer_|phone_|agent_|session_)/.test(tool)) return ''
-  const opened = current ? Boolean(links?.[current]) : Object.keys(links || {}).length > 0
-  if (opened) return ''
-  const who = current ? String(current).replace(/^session-/, '').slice(0, 8) : ''
-  return `这个会话（${who}）没开互联，互联工具现在不可用。在会话顶部点「🔗 互联」打开，开了之后这些工具立刻能用。`
+  // MCP 协议不带 caller，current 只能是推断（projcache 里 mtime 最新的那个），实测经常
+  // 猜错：用户在 A 会话，推断成 B，于是点了开关还被拦。宁可判松一点，也不能把已经开了
+  // 互联的人挡在外面 —— 所以只看「有没有任何一个会话开着互联」。
+  if (Object.keys(links || {}).length > 0) return ''
+  return '还没有任何会话打开互联，互联工具现在不可用。在任意一个会话顶部点「🔗 互联」打开，开了之后这些工具立刻能用。'
 }
 
 // 模型调用工具时不知道自己开在哪个会话里（MCP 协议没有 caller），所以「这条消息是从

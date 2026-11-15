@@ -20,8 +20,8 @@ const links = { 'session-aaa': { phoneId: 'session-bbb', at: '2026-11-15T00:00:0
 check('开了互联时 peer_say 放行', gateMessage('peer_say', links, 'session-aaa'), '')
 check('开了互联时 phone_shot 放行', gateMessage('phone_screenshot', links, 'session-aaa'), '')
 
-// 3) 别的会话开了、当前会话没开 -> 仍然拦（这是之前漏掉的洞）
-check('别的会话开了不算数', Boolean(gateMessage('peer_say', links, 'session-zzz')), true)
+// 3) 别的会话开了 -> 放行（MCP 拿不到 caller，推断不可靠，宁可判松也不误拦）
+check('只要有会话开着互联就放行', Boolean(gateMessage('peer_say', links, 'session-zzz')), false)
 
 // 4) 诊断类永远放行
 check('bridge_health 不拦', gateMessage('bridge_health', {}, 'session-aaa'), '')
@@ -34,7 +34,7 @@ check('推断不出会话且无 link 时拦', Boolean(gateMessage('peer_say', {}
 
 // 6) 文案里带短 id，方便用户知道是哪个会话
 const msg = gateMessage('peer_say', {}, 'session-9f8e7d6c-1111-2222-3333-444455556666')
-check('文案带 8 位短 id', msg.includes('9f8e7d6c'), true)
+check('文案不点名具体会话（推断不可靠）', msg.includes('9f8e7d6c'), false)
 check('文案提示去点开关', msg.includes('🔗 互联'), true)
 
 console.log(`\n${pass} 通过，${fail} 失败`)
