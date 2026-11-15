@@ -651,7 +651,40 @@ function __buildPhoneBridge(require) {
           var allThread = state.thread || []
           var marked = allThread.filter(function (row) { return markOf(row.level) !== '' })
           var visible = (showAll ? allThread : marked).slice(-24)
-          children.push(h('div', { key: 'thread', style: card },
+          // 用户要「一个会话一个专用」：对话按电脑会话分组，一眼分清哪句属于哪边。
+        var bubble = function (row) {
+          var mine = row.from !== 'phone'
+          var mark = markOf(row.level)
+          return h('div', {
+            key: 'thread-' + row.seq,
+            style: {
+              alignSelf: mine ? 'flex-end' : 'flex-start',
+              maxWidth: '88%',
+              padding: '7px 10px',
+              borderRadius: 10,
+              fontSize: 13,
+              lineHeight: 1.5,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              background: mine ? 'rgba(76,141,255,0.14)' : 'rgba(127,127,127,0.10)',
+            },
+          },
+            h('div', { style: { fontSize: 11, opacity: 0.6, marginBottom: 2 } },
+              (mark ? mark + ' ' : '') + (mine ? '💻 我' : '📱 手机') + (row.at ? ' · ' + fmtClock(row.at) : '')),
+            String(row.text).slice(0, 400),
+          )
+        }
+        var sessionLabel = function (id) {
+          var list = state.allSessions || []
+          for (var i = 0; i < list.length; i++) {
+            if (list[i].id === id) {
+              var row = list[i]
+              return row.title || row.name || (row.cwd ? String(row.cwd).split(/[\\/]/).filter(Boolean).pop() : '') || String(id).replace(/^session-/, '').slice(0, 8)
+            }
+          }
+          return String(id).replace(/^session-/, '').slice(0, 8)
+        }
+        children.push(h('div', { key: 'thread', style: card },
             h('div', { style: Object.assign({}, cardTitle, { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }) },
               h('span', null, t.thread),
               h('span', { style: { fontWeight: 400, display: 'flex', gap: 8, alignItems: 'baseline' } },
@@ -665,30 +698,25 @@ function __buildPhoneBridge(require) {
             ),
             visible.length ? null : h('div', { style: Object.assign({}, muted, { padding: '6px 0 2px' }) },
               showAll ? '还没有对话。上面选好两边会话，在输入框里说一句试试。' : '最近没有紧要消息（带 ❗❓⚠️✅📋 的那种）。点上面「全部」看完整对话。'),
-            h('div', { style: { display: visible.length ? 'flex' : 'none', flexDirection: 'column', gap: 7, marginTop: 4, maxHeight: 320, overflowY: 'auto', paddingRight: 4 } },
-              visible.map(function (row) {
-                var mine = row.from !== 'phone'
-                var mark = markOf(row.level)
-                return h('div', {
-                  key: 'thread-' + row.seq,
-                  style: {
-                    alignSelf: mine ? 'flex-end' : 'flex-start',
-                    maxWidth: '88%',
-                    padding: '7px 10px',
-                    borderRadius: 10,
-                    fontSize: 13,
-                    lineHeight: 1.5,
-                    whiteSpace: 'pre-wrap',
-                    wordBreak: 'break-word',
-                    background: mine ? 'rgba(76,141,255,0.14)' : 'rgba(127,127,127,0.10)',
-                  },
-                },
-                  h('div', { style: { fontSize: 11, opacity: 0.6, marginBottom: 2 } },
-                    (mark ? mark + ' ' : '') + (mine ? '💻 我' : '📱 手机') + (row.at ? ' · ' + fmtClock(row.at) : '')),
-                  String(row.text).slice(0, 400),
-                )
-              }),
-            ),
+            (function () {
+              var groups = []
+              var index = {}
+              visible.forEach(function (row) {
+                var key = row.desktopId || ''
+                if (!index[key]) { index[key] = { key: key, rows: [] }; groups.push(index[key]) }
+                index[key].rows.push(row)
+              })
+              if (!groups.length) return null
+              return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 12, marginTop: 4, maxHeight: 340, overflowY: 'auto', paddingRight: 4 } },
+                groups.map(function (group) {
+                  return h('div', { key: 'grp-' + (group.key || 'none'), style: { display: 'flex', flexDirection: 'column', gap: 7 } },
+                    h('div', { style: { fontSize: 11, fontWeight: 700, opacity: 0.5, letterSpacing: '0.04em', margin: '2px 0', alignSelf: 'flex-start' } },
+                      group.key ? '会话 · ' + sessionLabel(group.key) : '未分会话'),
+                    group.rows.map(bubble),
+                  )
+                }),
+              )
+            })(),
             state.workbenchUrl
               ? h('a', { key: 'chat-open', href: state.workbenchUrl, target: '_blank', rel: 'noreferrer', style: { display: 'inline-block', marginTop: 6, fontSize: 13, color: 'var(--dsw-alias-brand-primary, #4c8dff)' } }, t.chatOpen)
               : null,
