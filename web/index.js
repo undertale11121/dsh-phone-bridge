@@ -1030,6 +1030,10 @@ async function wakeTick(agents) {
   for (const item of incoming) {
     const named = String(item.to || '').startsWith('desktop:') ? String(item.to).slice('desktop:'.length) : ''
     let sessionId = pickByPinned?.id || live[0]?.id || ''
+    // 消息自己带了「这条是跟哪个电脑会话说的」，就投给它 —— 这是唯一能真正一对一的依据。
+    // 只靠 pinned（最后点过互联的那个）兜底，所有会话的回复都会挤进同一个。
+    const fromDesktop = String(item.desktopId || '').trim()
+    if (fromDesktop && live.some((row) => row.id === fromDesktop)) sessionId = fromDesktop
     if (named) {
       // 点名的会话：先按 id / 裸 uuid / 左边栏标题认，再退到会话目录里的名字。
       // 注意 resolveNamed 只查 registry，可能命中一个已经关掉的会话 —— 投进去必失败，

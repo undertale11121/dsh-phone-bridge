@@ -957,7 +957,12 @@ export class PhoneBridge {
 
   async sendAs(from, to, text, level) {
     if (!String(text || '').trim()) throw new Error('消息是空的')
-    return await this.post('/thread', { from, to: autoAddress(to), text, level })
+    // 带上「这条是跟哪个电脑会话说的」，电脑侧才能把回复投回同一个会话。
+    // 不带的后果：电脑侧只能靠「最后点过互联的那个会话」兜底，所有会话的回复会串到一个里。
+    const desktopId = from === 'phone' ? lastDesktopSource() : ''
+    const body = { from, to: autoAddress(to), text, level }
+    if (desktopId) body.desktopId = desktopId
+    return await this.post('/thread', body)
   }
 
   async readAs(as, since = 0, limit = 20) {
