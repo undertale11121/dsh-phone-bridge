@@ -430,13 +430,16 @@ async function runAction(body) {
       writeLinks(links)
       return { text: '已断开这个会话的互联' }
     }
-    // 用户 m04337「不用手动选」：没指定手机会话就接最近上报的那个。
-    const phoneId = String(body.phoneId || '').trim() || defaultPhoneSession()
-    if (!phoneId) throw new Error('手机上还没上报任何会话：先让手机连上电脑，手机端也要跑 0.6.4 以上的插件')
-    links[desktopId] = { phoneId, at: new Date().toISOString() }
+    // 没指定手机会话时就别硬接一个现成的：以前这里接「最近上报的那个」，
+    // 结果每个新会话都被连到同一个老手机会话上，消息全串进去（用户实测踩到）。
+    // 现在留空，让手机侧按 desktopId 自动开（或复用）它自己对应的那个会话。
+    const phoneId = String(body.phoneId || '').trim()
+    links[desktopId] = phoneId
+      ? { phoneId, at: new Date().toISOString() }
+      : { at: new Date().toISOString() }
     writeLinks(links)
     const short = (id) => String(id).replace(/^session-/, '').slice(0, 8)
-    return { text: `已把这个会话连到手机 ${short(phoneId)}` }
+    return { text: phoneId ? `已把这个会话连到手机 ${short(phoneId)}` : '已打开互联：手机会给这个会话开一个对应的对话' }
   }
   if (body.action === 'collab') {
     const collab = readCollab(config)
