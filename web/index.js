@@ -2433,6 +2433,15 @@ async function readJsonBody(req) {
 }
 
 export function apply(ctx) {
+  // 探针：宿主里加载的到底是哪一份、跑到哪一步。绝对路径写死，绕开 dshHome 的不确定性。
+  try {
+    fs.appendFileSync(
+      'C:/Users/17735/.dsh/phone-bridge/apply-probe.log',
+      `${new Date().toISOString()} apply 进入 pid=${process.pid} cwd=${process.cwd()} dshHome=${process.env.DSH_HOME || ''} homedir=${os.homedir()} inject=${typeof ctx?.inject} keys=${ctx ? Object.keys(ctx).slice(0, 8).join(',') : 'null'}\n`,
+    )
+  } catch {
+    /* 探针失败无所谓 */
+  }
   // webServer exists only under the web profile, and cordis has no optional
   // inject form, so the route rides a scoped inject of its own.
   if (typeof ctx.inject !== 'function') return

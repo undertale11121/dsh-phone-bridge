@@ -1,0 +1,3 @@
+2026-11-15T04:03:41.635Z apply 里进入 installHostTools，ctx.tools=object（function）
+2026-11-15T04:03:41.636Z 使用 ctx.tools 直取 拿到的 service，register=function
+2026-11-15T04:03:41.765Z 注册成功：26 个
