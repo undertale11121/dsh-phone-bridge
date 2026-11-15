@@ -2342,6 +2342,17 @@ async function registerHostTools(service) {
 
 let hostToolsStarted = false
 
+// 宿主半的工具都靠桥接进程的 /call 干活。MCP 行已经不注册了，没人替我们起桥接，
+// 所以宿主半自己负责把它拉起来（ensureDesktopServer 会检测已有实例，不会起第二个）。
+async function ensureBridgeRunning() {
+  try {
+    const mod = await import('../src/desktop.mjs')
+    if (mod && typeof mod.ensureDesktopServer === 'function') await mod.ensureDesktopServer()
+  } catch (error) {
+    console.error(`[phone-bridge] 拉起桥接失败：${error?.message || error}`)
+  }
+}
+
 // 宿主半注册工具的意义是「拿得到准确的当前会话」，所以只在桌面侧做；手机上
 // 工具面由 MCP 半提供，再注册一遍只会让模型看到两套同名工具。
 function installHostTools(ctx) {
@@ -2357,6 +2368,7 @@ function installHostTools(ctx) {
     }
     // cordis 的 inject 回调不等待返回值，异步异常会变成 unhandled rejection，自己吃掉。
     Promise.resolve()
+      .then(() => ensureBridgeRunning())
       .then(() => registerHostTools(service))
       .catch((error) => console.error(`[phone-bridge] 宿主工具注册失败：${error?.message || error}`))
   })

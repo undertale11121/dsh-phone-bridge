@@ -1002,6 +1002,7 @@ class DesktopBridge {
     // 宿主半（web/index.js 的 installHostTools）发来的调用：op 就是工具名。
     // 它从 exec.agent 拿到的是真实会话 id，比 MCP 半可靠，守卫用它才有意义。
     const toolHandler = this.toolHandlers?.[op]
+    console.error('[phone-bridge] /call op=', op, ' handlers=', Object.keys(this.toolHandlers || {}).length, ' hit=', typeof toolHandler)
     if (typeof toolHandler === 'function') {
       if (process.env.PHONE_BRIDGE_NO_GATE !== '1') {
         const gate = gateMessage(op, readLinksFile() || {}, sessionId || '')
@@ -1605,7 +1606,7 @@ function contextSnippet(ctx) {
   return lines.join('\n')
 }
 
-export async function runDesktopMcp() {
+export async function runDesktopMcp({ mcp = true } = {}) {
   const config = loadDesktopConfig()
   const bridge = new DesktopBridge(config)
   // Permission switches are written to desktop.json by the browser setup page
@@ -2159,7 +2160,7 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
   // 这样宿主半和 MCP 半共用一份实现，不会出现两套逻辑各改各的。
   bridge.toolHandlers = handlers
 
-  serveMcp({
+  if (mcp) serveMcp({
     name: 'phone-bridge',
     version: '0.3.0',
     tools: desktopTools(bridge),
@@ -2195,6 +2196,7 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
       dropLock()
     },
   })
+  if (!mcp) await new Promise(() => {})
   process.on('SIGTERM', () => {
     bridge.stop()
     dropLock()
@@ -2534,18 +2536,7 @@ export { beaconProbe, scanLan }
 
 // Standalone (non-MCP) entry: `node bridge.mjs desktop --serve`
 export async function runDesktopServer() {
-  const config = loadDesktopConfig()
-  const bridge = new DesktopBridge(config)
-  const port = await bridge.start()
-  writeLock({ pid: process.pid, port, log: desktopLogPath(), serve: true })
-  const dropLock = () => removeLock()
-  process.on('exit', dropLock)
-  log(`桌面端桥接已监听 ${config.host}:${port}`)
-  log(`日志：${desktopLogPath()}`)
-  for (const p of bridge.pairing()) log(`配对串：${p}`)
-  process.on('SIGTERM', () => {
-    bridge.stop()
-    process.exit(0)
-  })
-  await new Promise(() => {})
+  // 只监听 HTTP、不开 MCP（本地调试 / 宿主半通过 /call 调工具时用）。
+  // 必须和正常入口共用同一套 handlers，否则宿主半调工具会报「不认识的操作」。
+  return runDesktopMcp({ mcp: false })
 }
