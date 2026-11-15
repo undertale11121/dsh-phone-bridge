@@ -1488,10 +1488,13 @@ async function inboxTick(agents, lastReport) {
       try {
         const made = await ensureDesktopSession(agents, liveNow, desktopId)
         if (made && made.id) {
-          console.log(`[phone-bridge] 预建手机会话：${desktopId.replace(/^session-/, '').slice(0, 8)} → ${String(made.id).replace(/^session-/, '').slice(0, 8)}`)
+          const line = `${new Date().toISOString()} 预建手机会话：${desktopId.replace(/^session-/, '').slice(0, 8)} → ${String(made.id).replace(/^session-/, '').slice(0, 8)}\n`
+          console.log(`[phone-bridge] ${line.trim()}`)
+          try { fs.appendFileSync(path.join(bridgeDir(), 'inbox-boot.log'), line) } catch {}
         }
       } catch (error) {
         console.log(`[phone-bridge] 预建会话失败：${String(error?.message || error)}`)
+        try { fs.appendFileSync(path.join(bridgeDir(), 'inbox-boot.log'), `${new Date().toISOString()} 预建失败 ${desktopId}：${String(error?.message || error)}\n`) } catch {}
       }
     }
   }
