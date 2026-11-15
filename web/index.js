@@ -2495,9 +2495,20 @@ export function apply(ctx) {
   }
   // 桌面侧：同一批桥接工具在宿主半再注册一遍，好处是 execute 里能拿到准确的
   // 当前会话（MCP 协议不给），守卫不再靠 projcache mtime 猜。
+  // 探针：确认 installHostTools 到底被调用没有、抛没抛。绝对路径，不经 dshHome。
+  const probe = (line) => {
+    try {
+      fs.appendFileSync('C:/Users/17735/.dsh/phone-bridge/apply-probe.log', `${new Date().toISOString()} ${line}\n`)
+    } catch {
+      /* 探针失败无所谓 */
+    }
+  }
+  probe(`准备调用 installHostTools，isPhone=${isPhone()}，started=${hostToolsStarted}，typeof ctx.tools=${typeof ctx?.tools}`)
   try {
     installHostTools(ctx)
+    probe('installHostTools 正常返回')
   } catch (error) {
+    probe(`installHostTools 抛错：${error?.stack || error?.message || error}`)
     console.error(`[phone-bridge] 宿主工具跳过: ${error}`)
   }
   try {
