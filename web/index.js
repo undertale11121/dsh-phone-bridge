@@ -1661,6 +1661,12 @@ async function inboxTick(agents, lastReport) {
     }
     state.cursor = cursorNow
     writeJson(inboxStatePath(), state)
+    // 投递循环的诊断：游标不动时靠这一行判断是哪一类消息把它钉住了。
+    try {
+      const seqList = (value) => (value.length > 6 ? `${value.slice(0, 6).join(',')}…(${value.length})` : value.join(','))
+      fs.appendFileSync(path.join(bridgeDir(), 'inbox-boot.log'),
+        `${new Date().toISOString()} 本轮 msg=${seqs.length} in=${incoming.length} sent=${seqList(sent)} skip=${seqList(skipped)} fail=${seqList(failedSeqs)} block=${seqList(blockedSeqs)} cursor=${Number(state.cursor) || 0}\n`)
+    } catch {}
   }
 
   const now = Date.now()
