@@ -17,6 +17,7 @@ import {
   ensureDir,
   humanSize,
   log,
+  lanAddresses,
   parsePairUrl,
   phoneConfigPath,
   scanLan,
