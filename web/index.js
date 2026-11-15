@@ -189,7 +189,7 @@ function lanAddresses() {
 
 function fallbackPairUrl(config) {
   const [first] = lanAddresses()
-  return `http://${first || '127.0.0.1'}:${config.port}/pair?t=${config.token}`
+  return `http://${first || '127.0.0.1'}:${config.port}/pair?t=${config?.token}`
 }
 
 // The QR encoder lives with the engine half (src/qr.mjs); the bundle finds it
@@ -270,7 +270,7 @@ async function snapshot() {
     listen: `${config.host}:${config.port}`,
     background: background ? { pid: background.pid, port: background.port } : null,
     pairing: health?.pairing?.length ? health.pairing : Array.isArray(lock?.pairing) ? lock.pairing : [],
-    pairUrl: health?.pairUrl || (config.token ? fallbackPairUrl(config) : ''),
+    pairUrl: health?.pairUrl || (config?.token ? fallbackPairUrl(config) : ''),
     workbenchUrl: health?.workbenchUrl || '',
     permitLeft: Number(health?.permitLeft || 0),
     pendingPair: health?.pendingPair || null,
@@ -391,7 +391,7 @@ async function runAction(body) {
     let target = to
     if (to === 'phone' && collab.phoneSessionId) target = `phone:${collab.phoneSessionId}`
     const info = await ensureServer(config)
-    const row = await bridgePost(`http://127.0.0.1:${info.port}`, '/thread', config.token, { from: 'desktop', to: target, text, level: body.level })
+    const row = await bridgePost(`http://127.0.0.1:${info.port}`, '/thread', config?.token, { from: 'desktop', to: target, text, level: body.level })
     return { text: `已发到 ${target}（#${row.seq ?? '?'}）` }
   }
   if (body.action === 'linkRemote') {
@@ -716,7 +716,7 @@ export async function wakeSession(agents, sessionId, text, mode = 'queue', optio
 }
 
 async function threadPath(config, query) {
-  const auth = Buffer.from(JSON.stringify({ k: 'token', token: config.token })).toString('base64url')
+  const auth = Buffer.from(JSON.stringify({ k: 'token', token: config?.token })).toString('base64url')
   const res = await fetch(`http://127.0.0.1:${config.port}/thread?${query}&auth=${auth}`, {
     signal: AbortSignal.timeout(2500),
   })
@@ -917,14 +917,14 @@ async function wakeTick(agents) {
   }
   // 先把开着的会话补进会话目录，session_list / session_note 才有的可选
   try {
-    if (wake.enabled || config.token) syncRegistry(agents)
+    if (wake.enabled || config?.token) syncRegistry(agents)
   } catch {
     // 目录登记失败不影响唤醒
   }
   // 顺手写一份「这边开着哪些会话」的快照，桥接服务的 GET /collab 会带给对面。
   // 手机模型靠它才能 to: 'desktop:<名字>' 点名——它自己看不到电脑开了什么。
   try {
-    if (config.token) {
+    if (config?.token) {
       writeJson(path.join(bridgeDir(), 'live.json'), {
         at: new Date().toISOString(),
         sessions: listLiveSessions(agents),
@@ -933,7 +933,7 @@ async function wakeTick(agents) {
   } catch {
     // 快照失败不影响唤醒
   }
-  if (!wake.enabled || !config.token) return
+  if (!wake.enabled || !config?.token) return
 
   // 首次启动：把 cursor 对齐到「现在最后一条」，一条历史都不投。
   // 空工作台时 last 是 0，也要落一个 aligned 标记 —— 否则每个 tick 都重新对齐，
@@ -1327,9 +1327,28 @@ const inboxStatePath = () => path.join(bridgeDir(), 'inbox-state.json')
 
 const phoneAuth = (token) => Buffer.from(JSON.stringify({ k: 'token', token })).toString('base64url')
 
+// 新版配对用设备签名（device.json 的私钥）；phone.json 里的 token 会被桥接清空。
+// 这里优先签名，签名不可用才退回 token —— 否则手机侧收件器会因为「token 为空」静默停摆。
+function deviceAuth() {
+  try {
+    const idf = readJson(path.join(bridgeDir(), 'device.json'), null)
+    if (!idf || !idf.privatePem || !idf.id) return null
+    const ts = Date.now()
+    const sig = crypto.sign(null, Buffer.from(`${idf.id}:${ts}`), idf.privatePem).toString('base64')
+    return { k: 'device', id: idf.id, ts, sig }
+  } catch {
+    return null
+  }
+}
+
+const authQuery = (token) => {
+  const auth = deviceAuth()
+  return auth ? Buffer.from(JSON.stringify(auth)).toString('base64url') : phoneAuth(token)
+}
+
 async function bridgeGet(base, pathname, token, timeoutMs = 8000) {
   const sep = pathname.includes('?') ? '&' : '?'
-  const res = await fetch(`${base}${pathname}${sep}auth=${phoneAuth(token)}`, { signal: AbortSignal.timeout(timeoutMs) })
+  const res = await fetch(`${base}${pathname}${sep}auth=${authQuery(token)}`, { signal: AbortSignal.timeout(timeoutMs) })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return await res.json()
 }
@@ -1338,7 +1357,7 @@ async function bridgePost(base, pathname, token, payload, timeoutMs = 8000) {
   const res = await fetch(`${base}${pathname}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ auth: { k: 'token', token }, ...payload }),
+    body: JSON.stringify({ auth: deviceAuth() || { k: 'token', token }, ...payload }),
     signal: AbortSignal.timeout(timeoutMs),
   })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
@@ -1420,16 +1439,28 @@ async function ensureDesktopSession(agents, live, desktopId) {
   return { id: created }
 }
 
+// 配对信息在 peer.json 的 pairs 里；phone.json 的 url 会被桥接清空，不能只信它。
+function phoneBase(config) {
+  const direct = String(config?.url || '').replace(/\/+$/, '')
+  if (direct) return direct
+  try {
+    const peer = readJson(path.join(bridgeDir(), 'peer.json'), null)
+    const pair = Array.isArray(peer?.pairs) ? peer.pairs[0] : null
+    if (pair && pair.host) return `http://${pair.host}:${Number(pair.port) || 8787}`
+  } catch {}
+  return ''
+}
+
 async function inboxTick(agents, lastReport) {
   const config = readJson(phoneConfigPath(), null)
-  if (!config?.url || !config?.token) return lastReport
-  const base = String(config.url).replace(/\/+$/, '')
+  const base = phoneBase(config)
+  if (!base) return lastReport
   const state = readJson(inboxStatePath(), { cursor: 0, lastError: '' })
 
   // 和桌面侧一个规矩：第一次跑先把 cursor 对齐到最新，不把历史灌进会话。
   if (!state.aligned && !state.cursor) {
     try {
-      const last = await alignCursor((query) => bridgeGet(base, `/thread?${query}`, config.token, 8000), 'phone')
+      const last = await alignCursor((query) => bridgeGet(base, `/thread?${query}`, config?.token, 8000), 'phone')
       // 工作台为空时 last 是 0，也要记下「已对齐」，否则每个 tick 都重对齐，
       // 等第一条消息落盘正好被对齐成已处理，永远不投。
       state.cursor = Math.max(Number(state.cursor) || 0, last)
@@ -1445,7 +1476,7 @@ async function inboxTick(agents, lastReport) {
 
   let data
   try {
-    data = await bridgeGet(base, `/thread?since=${Number(state.cursor) || 0}&as=phone&limit=50`, config.token)
+    data = await bridgeGet(base, `/thread?since=${Number(state.cursor) || 0}&as=phone&limit=50`, config?.token)
   } catch (error) {
     const message = String(error?.message || error)
     if (message !== state.lastError) {
@@ -1462,7 +1493,7 @@ async function inboxTick(agents, lastReport) {
   let peerSessions = []
   let peerLinks = null
   try {
-    const snapshot = await bridgeGet(base, '/collab', config.token, 5000)
+    const snapshot = await bridgeGet(base, '/collab', config?.token, 5000)
     collab = snapshot?.collab || null
     peerSessions = Array.isArray(snapshot?.desktopSessions) ? snapshot.desktopSessions : []
     peerLinks = snapshot?.links && typeof snapshot.links === 'object' ? snapshot.links : {}
@@ -1634,7 +1665,7 @@ async function inboxTick(agents, lastReport) {
 
   const now = Date.now()
   if (now - (Number(lastReport) || 0) > 30_000) {
-    await reportPhoneSessions(agents, base, config.token)
+    await reportPhoneSessions(agents, base, config?.token)
     return now
   }
   return lastReport
@@ -2261,7 +2292,7 @@ async function callBridgeTool(name, args, sessionId) {
     out = await bridgePost(
       `http://127.0.0.1:${config.port}`,
       '/call',
-      config.token,
+      config?.token,
       {
         // 桥接侧按 op 找工具 handler；sessionId 给守卫用，也决定了投递到哪个会话。
         op: name,
