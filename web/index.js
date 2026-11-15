@@ -2299,36 +2299,33 @@ async function resolveDefineTool(service) {
 }
 
 async function registerHostTools(service) {
-  const found = await resolveDefineTool(service)
-  if (!found.defineTool) {
-    console.error(`[phone-bridge] 宿主工具没注册：defineTool 两个来源都不可用（${found.reason}）`)
-    return
-  }
+  // 不走 defineTool：它在 @deepseek-ai/dsh-tools 里，而插件跑在 profile 的
+  // node_modules 下，解析不到宿主包。registry 只校验 output.schema 是合法
+  // JSON Schema、output.render 是函数，手写一份即可。
   const timeoutMs = hostToolTimeoutMs()
   const names = []
   const skipped = []
   for (const spec of HOST_TOOLS) {
     try {
-      service.register(
-        found.defineTool({
-          name: spec.name,
-          description: spec.description,
-          parameters: spec.parameters || {},
-          output: HOST_TOOL_OUTPUT,
-          timeoutMs,
-          async execute(args, exec) {
-            // 这一行就是这一层存在的理由：MCP 给不了，宿主给得了。
-            const sessionId = String(exec?.agent?.session?.id || exec?.agent?.id || '')
-            const result = await callBridgeTool(spec.name, args, sessionId)
-            const text = String(result?.text ?? '')
-            const images = Array.isArray(result?.images) ? result.images.length : 0
-            // 截图这条链路暂时带不过来（宿主工具的 render 只回文本），如实说一声，
-            // 别让模型以为「没有截图」。
-            if (!images) return { text }
-            return { text: `${text}\n\n（另有 ${images} 张图片没带过来，要看截图请改用 MCP 工具）` }
-          },
-        }),
-      )
+      service.register({
+        name: spec.name,
+        description: spec.description,
+        parameters: spec.parameters || { type: 'object', properties: {} },
+        output: HOST_TOOL_OUTPUT,
+        timeoutMs,
+        async execute(args, exec) {
+          // 这一行就是这一层存在的理由：MCP 给不了，宿主给得了。
+          const sessionId = String(exec?.agent?.session?.id || exec?.agent?.id || '')
+          const result = await callBridgeTool(spec.name, args, sessionId)
+          const text = String(result?.text ?? '')
+          const images = Array.isArray(result?.images) ? result.images.length : 0
+          // 截图这条链路暂时带不过来（宿主工具的 render 只回文本），如实说一声，
+          // 别让模型以为「没有截图」。
+          const body = images ? `${text}\n\n（另有 ${images} 张图片没带过来，要看截图请改用 MCP 工具）` : text
+          // 必须回 content block 数组：回裸对象/字符串会被判成「没有内容」。
+          return [{ type: 'text', text: body }]
+        },
+      })
       names.push(spec.name)
     } catch (error) {
       // 同名工具已经注册过时不要让整批失败（MCP client 那边是 mcp__<server>__ 前缀，
@@ -2337,7 +2334,7 @@ async function registerHostTools(service) {
     }
   }
   const tail = skipped.length ? `，跳过 ${skipped.length} 个：${skipped.join('；')}` : ''
-  console.log(`[phone-bridge] 宿主工具 ${names.length}/${HOST_TOOLS.length} 个已注册（defineTool 来自 ${found.from}）${tail}`)
+  console.log(`[phone-bridge] 宿主工具 ${names.length}/${HOST_TOOLS.length} 个已注册${tail}`)
 }
 
 let hostToolsStarted = false
