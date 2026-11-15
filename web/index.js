@@ -2377,8 +2377,15 @@ function installHostTools(ctx) {
       .then((count) => note(`注册成功：${count} 个`))
       .catch((error) => note(`注册失败：${error?.stack || error?.message || error}`))
   }
-  if (ctx && ctx.tools && typeof ctx.tools.register === 'function') {
-    use(ctx.tools, 'ctx.tools 直取')
+  let direct = null
+  try {
+    direct = ctx ? ctx.tools : null
+  } catch (error) {
+    note(`ctx.tools 取值抛错：${error?.message || error}`)
+    direct = null
+  }
+  if (direct && typeof direct.register === 'function') {
+    use(direct, 'ctx.tools 直取')
     return
   }
   if (typeof ctx.inject !== 'function') {
@@ -2501,7 +2508,20 @@ export function apply(ctx) {
   }
   // 桌面侧：同一批桥接工具在宿主半再注册一遍，好处是 execute 里能拿到准确的
   // 当前会话（MCP 协议不给），守卫不再靠 projcache mtime 猜。
-  trace(`准备调用 installHostTools，isPhone=${isPhone()}，started=${hostToolsStarted}，typeof ctx.tools=${typeof ctx?.tools}`)
+  let toolsProbe = 'unreadable'
+  try {
+    toolsProbe = typeof ctx?.tools
+  } catch (error) {
+    // cordis 的服务是 getter，服务没就绪时取值可能抛，必须自己兜住。
+    toolsProbe = `读取抛错：${error?.message || error}`
+  }
+  let phoneProbe = 'unknown'
+  try {
+    phoneProbe = String(isPhone())
+  } catch (error) {
+    phoneProbe = `读取抛错：${error?.message || error}`
+  }
+  trace(`准备调用 installHostTools，isPhone=${phoneProbe}，started=${hostToolsStarted}，ctx.tools=${toolsProbe}`)
   try {
     installHostTools(ctx)
     trace('installHostTools 正常返回')

@@ -1,3 +1,11 @@
 2026-11-15T04:07:31.510Z apply 进入 pid=2516 cwd=C:\Users\17735\.dsh\profiles\desktop dshHome= homedir=C:\Users\17735 inject=function keys=fiber
 2026-11-15T04:10:31.966Z apply 进入 pid=2516 cwd=C:\Users\17735\.dsh\profiles\desktop dshHome= homedir=C:\Users\17735 inject=function keys=fiber
 2026-11-15T04:10:47.485Z apply 进入 pid=8264 cwd=C:\Users\17735\.dsh\profiles\desktop dshHome= homedir=C:\Users\17735 inject=function keys=fiber
+2026-11-15T04:12:26.616Z apply 进入 pid=26496 cwd=C:\Users\17735\.dsh\profiles\desktop dshHome= homedir=C:\Users\17735 inject=function
+2026-11-15T04:12:26.617Z 准备 installWake
+2026-11-15T04:12:26.619Z installWake 正常返回
+2026-11-15T04:14:03.554Z apply 进入 pid=4964 cwd=C:\Users\17735\.dsh\phone-bridge dshHome=C:\Users\17735\AppData\Local\Temp\phone-bridge-web-GwPqmb homedir=C:\Users\17735 inject=function
+2026-11-15T04:14:03.555Z 准备 installWake
+2026-11-15T04:14:03.556Z installWake 正常返回
+2026-11-15T04:14:03.557Z 准备调用 installHostTools，isPhone=false，started=false，ctx.tools=undefined
+2026-11-15T04:14:03.558Z installHostTools 正常返回
