@@ -88,7 +88,7 @@ function __buildPhoneBridge(require) {
         wakeOk: '已保存',
         phoneNote: '这台是手机端：连接和配对请用 App 输入框上方的「互联」胶囊，这里只显示状态。',
         collab: '两个会话直连',
-        collabHint: '选定之后，消息不再丢在工作台上等人来取，而是直接投进对方开着的会话——两边模型都能像人一样发话。',
+        collabHint: '在会话顶部点「🔗 互联」，手机那边会自动开一个对应的会话（已有就复用）。开了之后两边模型直接说话，不用在这里选。',
         collabDesktop: '电脑上哪个会话',
         collabPhone: '手机上哪个会话',
         collabNone: '（还没选）',
@@ -152,7 +152,7 @@ function __buildPhoneBridge(require) {
         retry: 'Retry',
         phoneNote: 'This machine is the phone side: pair it from the “Phone bridge” capsule in the app. This card is read-only here.',
         collab: 'Two sessions, straight through',
-        collabHint: 'Once picked, a message is delivered into the session open on the other side instead of waiting on the workbench — both models can just talk.',
+        collabHint: 'Click the link button at the top of a session — the phone opens (or reuses) a matching session automatically. After that the two models just talk, no picking here.',
         collabDesktop: 'Desktop session',
         collabPhone: 'Phone session',
         collabNone: '(none yet)',
@@ -622,45 +622,6 @@ function __buildPhoneBridge(require) {
               },
             }, "New-NetFirewallRule -DisplayName 'dsh-phone-bridge' -Direction Inbound -Protocol TCP -LocalPort 8787 -Action Allow -Profile Private"),
             h('div', { style: Object.assign({}, muted, { padding: '2px 0 8px' }) }, t.collabHint),
-            // 用户要的是「每个会话一个开关」：勾上就自动配对到下面选的那个手机会话，
-            // 之后谁不点名发的消息都走这条配对，不用每回再选。
-            h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 8, fontSize: 13 } },
-              h('span', { style: muted }, '配对到'),
-              h('select', {
-                value: linkTarget,
-                style: Object.assign({}, field, { width: 'auto', minWidth: 150 }),
-                onChange: function (event) { pickCollab({ phoneSessionId: event.target.value }) },
-              },
-                phoneRows.map(function (item) {
-                  var label = item.name || item.title || '手机会话'
-                  return h('option', { key: item.id, value: String(item.id).replace(/^psess:/, '') }, label)
-                }),
-                phoneRows.length ? null : h('option', { value: '' }, t.phoneNone),
-              ),
-              phoneRows.length ? null : h('span', { style: muted }, '（手机会话还没报上来）'),
-            ),
-            h('div', { style: { display: live.length ? 'flex' : 'none', flexDirection: 'column', gap: 6, maxHeight: 220, overflowY: 'auto' } },
-              live.map(function (item) {
-                var linked = Boolean(links[item.id])
-                var folder = String(item.cwd || '').split(/[\\/]/).filter(Boolean).pop() || ''
-                var label = item.title || item.name || folder || '会话'
-                if (item.title && item.name && item.name !== item.title) label += ' · ' + item.name
-                return h('label', { key: 'lk-' + item.id, style: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' } },
-                  h('input', {
-                    type: 'checkbox',
-                    checked: linked,
-                    disabled: !linkTarget,
-                    onChange: function (event) {
-                      act({ action: 'link', desktopId: item.id, phoneId: linkTarget, off: !event.target.checked })
-                    },
-                  }),
-                  h('span', { style: { flex: '1 1 auto', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, label),
-                  linked ? h('span', { style: Object.assign({}, muted, { fontSize: 12, flex: '0 0 auto' }) }, '互联中') : null,
-                  item.open === false ? h('span', { style: Object.assign({}, muted, { fontSize: 12, flex: '0 0 auto' }) }, t.sessionClosed) : null,
-                )
-              }),
-            ),
-            live.length ? null : h('div', { style: muted }, t.liveNone),
             h('div', { style: { display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap', alignItems: 'stretch' } },
               h('select', {
                 value: sayLevel,

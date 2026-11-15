@@ -649,6 +649,10 @@ function readWakeState() {
     cursor: Number(state.cursor || 0),
     lastWake: state.lastWake || null,
     lastError: String(state.lastError || ''),
+    // 这两个字段以前被丢掉了：giveUp 每次从 0 开始（永不放弃重试）、
+    // aligned 每次从 false 开始（每轮都要重新对齐游标）。
+    giveUp: state.giveUp && typeof state.giveUp === 'object' ? state.giveUp : {},
+    aligned: state.aligned === true,
   }
 }
 

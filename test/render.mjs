@@ -141,16 +141,11 @@ function textOf(tree) {
   console.log(`  面板：${selects.length} 个下拉 / ${inputs.length} 个输入框 / ${buttons.length} 个按钮`)
 
   if (!text.includes('两个会话直连')) throw new Error('面板没有「两个会话直连」标题')
-  if (selects.length < 2) throw new Error(`下拉数量不对：${selects.length}`)
+  // 会话手动选择区已去掉：现在只剩「暗号」一个下拉，配对完全靠会话顶部那颗开关。
+  if (selects.length !== 1) throw new Error(`下拉数量不对：${selects.length}（应该只剩暗号那一个）`)
   if (!inputs.length) throw new Error('没有输入框')
   if (!buttons.some((b) => (b.props?.children || []).includes('发给手机'))) throw new Error('没有「发给手机」按钮')
-
-  // 电脑会话不再用下拉，改成「每个会话一行开关」；手机会话仍是一个下拉（配对到谁）。
-  const phoneOptions = selects[0].props.children
-  if (phoneOptions.length < 1) throw new Error('手机会话下拉没有选项')
-  const toggles = inputs.filter((node) => node.props?.type === 'checkbox')
-  if (!toggles.length) throw new Error('没有会话互联开关')
-  console.log(`✓ 手机会话选项 ${phoneOptions.length} 个，会话开关 ${toggles.length} 个`)
+  console.log('✓ 面板已无手动选会话区（只剩暗号下拉 + 发消息）')
   console.log('✓ 有 state 时面板渲染通过')
 }
 
