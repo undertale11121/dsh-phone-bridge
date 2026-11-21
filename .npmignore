@@ -1,0 +1,50 @@
+# 发布包排除项（files 白名单内部再过滤）
+*.bak
+*.bak-*
+*.log
+*.tmp
+.DS_Store
+
+# 本地状态 / 运行时数据
+.pbw/
+desktop.json
+desktop.json.*
+links.json
+links.json.*
+live.json
+thread.jsonl
+consumed.json
+registry.json
+agents.json
+agents.json.*
+desktop.lock
+announce.json
+phone.json
+peer.json
+peer-links.json
+phone-links.json
+inbox-state.json
+wake-state.json
+device.json
+
+# 探测/调试脚本与日志
+.probe-tools.mjs
+probe*.mjs
+apply-probe.log
+host-tools*.log
+host-tools-test.log
+bridge.log
+
+# 打包产物与备份
+dist/
+backups/
+
+# 开发笔记
+HANDOFF.md
+NOTES*.md
+.goreadme.md
+
+# 测试运行时产物
+test/home*/*/bridge.log
+test/home*/*/agents/*.log
+test/results/

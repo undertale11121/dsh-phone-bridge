@@ -10,5 +10,5 @@
 # bridge.mjs print-patch。
 - insert:
     - id: dsh-phone-bridge
-      name: dsh-phone-bridge
+      name: "@undertale11121/dsh-phone-bridge"
       config: {}
