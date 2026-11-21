@@ -618,12 +618,14 @@ class DesktopBridge {
         const links = readLinksFile()
         let key = desktopId || Object.keys(links).find((id) => String(links[id]?.phoneId || '') === phoneId) || ''
         if (!key && phoneId) {
-          // 手机端点了开关但没带 desktopId：以前会接到「电脑上最近开着的那个会话」，
-          // 结果不同的手机会话全被连到同一个电脑会话（串会话）。
-          // 用户要求一一对应 —— 宁可报错让用户去电脑上点那个会话，也不猜。
-          return sendJson(res, 400, {
-            ok: false,
-            text: '手机端没指定要连哪个电脑会话，请在电脑上点那个会话顶部的「🔗 互联」',
+          // 手机端点了开关、但电脑上还没有跟它配对的会话：开一个新会话接上。
+          // 绝不猜「电脑上最近开着的那个」——那会把不同手机会话串到同一个电脑会话
+          // （用户要的是一一对应）。便签交给宿主半兑现（fulfilPendingSession）。
+          patchDesktopConfig({ pendingNewSession: { phoneId, at: new Date().toISOString() } })
+          return sendJson(res, 200, {
+            ok: true,
+            pending: true,
+            text: '电脑上还没有这个对话，正在给你开一个新的…',
           })
         }
         if (!key) {

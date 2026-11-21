@@ -1055,7 +1055,11 @@ async function fulfilPendingSession() {
   const links = readLinks()
   links[id] = { phoneId: String(pending.phoneId), at: new Date().toISOString() }
   writeLinks(links)
-  patchConfig({ pendingNewSession: null })
+  // 两边都要亮：手机端那颗开关靠这个会话出现在 links 里，电脑端靠 desktopSessionId。
+  patchConfig({
+    pendingNewSession: null,
+    collab: { ...(config.collab || {}), desktopSessionId: id, at: new Date().toISOString() },
+  })
   return id
 }
 
