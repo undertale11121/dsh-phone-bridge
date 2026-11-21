@@ -196,7 +196,9 @@ function printPatch() {
   console.log(`# 这台机器上是「${isPhone ? '手机端' : '桌面端'}」；同一段在两端都能用（auto 自动识别）。改完重启 DSH。`)
   console.log('')
   console.log('- insert:')
-  console.log('    - id: dsh-phone-bridge')
+  // id 不能和 bundle 自带的条目同名：cordis 按 id 挂载，同 id 只保留最后一行，
+  // 撞上就会把 bundle 行顶掉、apply 不执行（面板/路由全部消失且无告警）。
+  console.log('    - id: dsh-phone-bridge-engine')
   console.log(`      name: '@deepseek-ai/dsh-mcp-client'`)
   console.log('      config:')
   console.log('        serverName: phone-bridge')
@@ -207,6 +209,11 @@ function printPatch() {
   console.log(`          - auto`)
   console.log(`        toolCallTimeoutMs: ${timeout}`)
   console.log('        failOnStartupError: false')
+  if (!isPhone) {
+    // 桌面端的 26 个工具由宿主半注册（web/index.js），这条 MCP 行只负责把桥接拉起来；
+    // 两者都注册会撞 already registered the same action。
+    console.log('      disabled: true')
+  }
   console.log('        # 让桥接知道是哪个会话在调用它（自动唤醒要用）')
   console.log('        dshGoPhoneCaller: true')
 }

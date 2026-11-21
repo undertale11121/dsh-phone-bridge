@@ -1,7 +1,0 @@
-# 手机侧收件器：把电脑模型发的话直接投进手机上的 DSH 会话。
-# 和 desktop 侧的 web/index.js 是对称的两半，一个管「手机 → 电脑会话」，
-# 一个管「电脑 → 手机会话」。
-- insert:
-    - id: phone-bridge-inbox
-      name: phone-bridge-inbox
-      config: {}

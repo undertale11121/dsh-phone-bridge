@@ -1991,6 +1991,7 @@ export function enginePatch(engine) {
     '# 由 web/index.js 首次加载时自动追加；删掉它，桥接工具就没了。',
     '- insert:',
     `    - id: ${ENGINE_ENTRY_ID}`,
+    '      disabled: true',
     `      name: '${ENGINE_CLIENT}'`,
     '      config:',
     '        serverName: phone-bridge',
@@ -2014,7 +2015,10 @@ export function withEngineRow(patch, engine) {
   const begin = patch.indexOf(AUTO_BEGIN)
   if (begin >= 0) {
     const end = patch.indexOf(AUTO_END, begin)
-    const stop = end >= 0 ? end + AUTO_END.length : patch.length
+    // 只有 BEGIN 没有 END（手工删过/编辑器截断）：此时把 BEGIN 之后全当自注册段
+    // 会把 profile 里后面的插件条目整片删掉 → DSH 起不来。宁可不动。
+    if (end < 0) return patch
+    const stop = end + AUTO_END.length
     return `${patch.slice(0, begin)}${block.trimEnd()}${patch.slice(stop).replace(/^\n*/, '\n')}`
   }
   return `${block}\n${patch.replace(/^\uFEFF/, '')}`
@@ -2558,6 +2562,23 @@ async function resolveDefineTool(service) {
   }
 }
 
+/** defineTool 的作者侧简写（属性名 -> 子 schema，required 写在属性里）编译成完整 JSON Schema。
+ *  宿主注册不经过 defineTool 的编译步骤，直接传简写等于把 26 个工具的参数声明废掉。 */
+function toToolParameters(spec) {
+  if (!spec || typeof spec !== 'object') return { type: 'object', properties: {}, additionalProperties: false }
+  if (spec.type === 'object' && spec.properties) return spec
+  const properties = {}
+  const required = []
+  for (const [key, value] of Object.entries(spec)) {
+    if (!value || typeof value !== 'object') continue
+    const copy = { ...value }
+    if (copy.required === true) required.push(key)
+    delete copy.required
+    properties[key] = copy
+  }
+  return { type: 'object', properties, required, additionalProperties: false }
+}
+
 async function registerHostTools(service) {
   // 不走 defineTool：它在 @deepseek-ai/dsh-tools 里，而插件跑在 profile 的
   // node_modules 下，解析不到宿主包。registry 只校验 output.schema 是合法
@@ -2570,7 +2591,7 @@ async function registerHostTools(service) {
       service.register({
         name: spec.name,
         description: spec.description,
-        parameters: spec.parameters || { type: 'object', properties: {} },
+        parameters: toToolParameters(spec.parameters),
         output: HOST_TOOL_OUTPUT,
         timeoutMs,
         async execute(args, exec) {

@@ -1,6 +1,6 @@
 {
   "name": "dsh-phone-bridge-web",
-  "version": "0.6.3",
+  "version": "0.6.16",
   "private": true,
   "type": "module",
   "main": "./index.js",
@@ -11,19 +11,8 @@
   },
   "files": [
     "index.js",
-    "client.js",
-    "cordis.patch.yml"
+    "client.js"
   ],
-  "dsh": {
-    "bundle": {
-      "patch": "./cordis.patch.yml"
-    },
-    "client": {
-      "inject": [],
-      "platform": "web",
-      "immediately": true
-    }
-  },
   "engines": {
     "dsh": ">=0.2.1-rc.2 <0.3.0-0"
   }
