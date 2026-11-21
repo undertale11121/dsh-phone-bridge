@@ -348,6 +348,34 @@ function readAgents() {
     }))
 }
 
+// 手机模型用 peer_say / converse 发消息时拿不到自己的会话 id（DSH 的 MCP 客户端
+// 不传 caller），所以 thread 里的消息常常没有 desktopId。这时按「手机上唯一一个
+// 最近还活着的会话」反查 links 映射来定去处：只有唯一候选才用，多会话一律不猜。
+function activePhoneSessionIds() {
+  const now = Date.now()
+  try {
+    return readAgents()
+      .filter((row) => row.id.startsWith('psess:') && row.at && now - Date.parse(row.at) < 120_000)
+      .map((row) => row.id.slice('psess:'.length))
+      .filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+function desktopForPhone(phoneId) {
+  if (!phoneId) return ''
+  try {
+    const links = readJson(path.join(bridgeDir(), 'links.json'), {}) || {}
+    for (const [desktopId, entry] of Object.entries(links)) {
+      if (entry && String(entry.phoneId || '') === phoneId) return desktopId
+    }
+  } catch {
+    // 读不到就退回 pinned
+  }
+  return ''
+}
+
 async function snapshot() {
   const config = readConfig()
   let background = null
@@ -1282,7 +1310,12 @@ async function wakeTick(agents) {
       // 消息自己带了「这条是跟哪个电脑会话说的」—— 唯一能真正一对一的依据。
       sessionId = fromDesktop
     } else {
-      sessionId = pickByPinned?.id || ''
+      // 消息没带 desktopId（手机模型走 peer_say 时拿不到自己的会话 id）。
+      // 如果手机上恰好只有一个会话最近还在动，就用它的 links 映射反查电脑会话 ——
+      // 这样「手机 → 电脑」也能一一对应，而不是全塞进 pinned 那个。
+      const phones = activePhoneSessionIds()
+      const byPhone = phones.length === 1 ? desktopForPhone(phones[0]) : ''
+      sessionId = (byPhone && live.some((row) => row.id === byPhone) ? byPhone : '') || pickByPinned?.id || ''
     }
     if (!sessionId) {
       // 没有一一对应的电脑会话（发消息的会话没点互联开关）。这条**投给谁都不对**，
