@@ -570,11 +570,9 @@ function __buildPhoneBridge(require) {
             return String(b.at || '').localeCompare(String(a.at || ''))
           })
           var links = state.links || {}
-          var linkTarget = String(
-            collab.phoneSessionId
-            || (phoneRows[0] ? String(phoneRows[0].id).replace(/^psess:/, '') : '')
-            || ''
-          )
+          // 只认用户显式配对的那一个；不再兜底到「最近上报的手机会话」——
+          // 用户要的是每个会话一一对应，兜底会让所有电脑会话连到同一个手机会话。
+          var linkTarget = String(collab.phoneSessionId || '')
           var pickCollab = function (patch) {
             var next = {
               action: 'collab',

@@ -486,9 +486,9 @@ function readCollab(config) {
 // 开关打开后，谁不点名发的消息都默认走这条配对。
 // 用户要「不用手动选」：没给 phoneId 时，自动用手机上最近上报的那个会话。
 export function defaultPhoneSession() {
-  const rows = readAgents().filter((a) => a.host === 'phone' && String(a.id).startsWith('psess:'))
-  if (!rows.length) return ''
-  return String(rows[rows.length - 1].id).slice('psess:'.length)
+  // 不再「取最近上报的手机会话」：用户要的是每个电脑会话对唯一一个手机会话，
+  // 没有显式配对就是没有，不允许拿别的会话顶替。
+  return ''
 }
 
 export function readLinks(config) {
@@ -1020,9 +1020,12 @@ async function wakeTick(agents) {
   //   ① 卡片指定且还活着的会话  ② 最近有活动的活会话  ③ 一个都没有就等
   const live = listLiveSessions(agents)
   const collab = readCollab(config)
-  // 优先级：会话开关（links）> 面板钉的协作对 > 卡片里的 sessionId > 最近用过的那个。
-  const link = recentLink(config)
-  const pinned = link?.desktopId || collab.desktopSessionId || wake.sessionId || readActive()?.sessionId || ''
+  // 优先级：会话开关（links）> 面板钉的协作对 > 卡片里的 sessionId。
+  // **不再兜底到「最近活跃的那个会话」**——用户要的是「每一个会话一一对应」，
+  // 兜底会把所有消息都灌进同一个会话。
+  // 只认用户显式选的配对（面板 collab / 卡片配置）；**不再拿「最近点过开关的
+  // 那个会话」兜底**——那是「沿用最近」的最后一个入口，会让所有消息挤进一个会话。
+  const pinned = collab.desktopSessionId || wake.sessionId || ''
   const pickByPinned = pinned ? live.find((row) => row.id === pinned) : null
 
   // 同一个会话的消息合成一条投。用户的原话是「每次你俩发消息，出现一大串，
@@ -1031,7 +1034,7 @@ async function wakeTick(agents) {
   const groups = new Map()
   for (const item of incoming) {
     const named = String(item.to || '').startsWith('desktop:') ? String(item.to).slice('desktop:'.length) : ''
-    let sessionId = pickByPinned?.id || live[0]?.id || ''
+    let sessionId = pickByPinned?.id || ''
     // 消息自己带了「这条是跟哪个电脑会话说的」，就投给它 —— 这是唯一能真正一对一的依据。
     // 只靠 pinned（最后点过互联的那个）兜底，所有会话的回复都会挤进同一个。
     const fromDesktop = String(item.desktopId || '').trim()
@@ -1042,11 +1045,13 @@ async function wakeTick(agents) {
       // 所以命中后还要确认它真的开在引擎里，否则退回「开着的那个」，消息不能丢。
       const matched = matchSession(live, named) || resolveNamed(named)
       const alive = matched && live.some((row) => row.id === matched.id)
-      sessionId = alive ? matched.id : pickByPinned?.id || live[0]?.id || ''
+      sessionId = alive ? matched.id : pickByPinned?.id || ''
     }
     if (!sessionId) {
-      // 一个会话都没开着：**cursor 不前进**，下次再试；消息留在工作台上不丢。
-      state.lastError = 'DSH 里现在没有开着的会话，这条消息留在工作台等你打开对话'
+      // 没有一一对应的电脑会话（这个会话没点互联开关）：**跳过这条并推进游标**。
+      // 不能一直卡着——卡住的结果是每 3 秒重投同一条，用户看到的就是刷屏。
+      state.lastError = '有手机消息没有对应的电脑会话（那个会话没开互联），已跳过'
+      skipped.push(Number(item.seq) || 0)
       continue
     }
     if (!groups.has(sessionId)) groups.set(sessionId, [])
@@ -1537,8 +1542,8 @@ async function inboxTick(agents, lastReport) {
       syncPeerSessions(peerSessions)
     } catch {}
   }
-  const link = recentLink(config)
-  const pinned = String(link?.phoneId || collab?.phoneSessionId || '')
+  // 同上：只认用户显式选的配对，不再取「最近点过开关的那个」。
+  const pinned = String(collab?.phoneSessionId || '')
 
   const skipped = []
   const incoming = (data?.messages || []).filter((item) => {
@@ -1578,7 +1583,9 @@ async function inboxTick(agents, lastReport) {
       writeJson(inboxStatePath(), state)
       return lastReport
     }
-    const fallback = (pinned && live.find((row) => row.id === pinned)) || live[0] || null
+    // 只认「明确配对的」手机会话：pinned 来自用户显式选择（collab/link）。
+    // 绝不退回 live[0]——那会把所有电脑会话的消息挤进同一个手机会话。
+    const fallback = (pinned && live.find((row) => row.id === pinned)) || null
     // 分组：带 desktopId 的按「来源电脑会话」各自分身；没带的保持老规矩
     // （点名的投给点名那个，没点名的投给 pinned / 最近活会话）。
     const groups = new Map()
