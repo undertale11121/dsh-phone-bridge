@@ -833,8 +833,19 @@ function __buildPhoneBridge(require) {
         // 手机端的开关表是从电脑同步过来的（peerLinks），键仍是电脑会话 id。
         var onPhone = String((state && state.role) || '').toLowerCase() === 'phone'
         var links = (state && (onPhone ? state.peerLinks : state.links)) || {}
+        // 手机端的开关：服务端把「电脑记的 phoneId + 本机映射值」合成 linkedPhoneIds 传下来。
+        // 以前这里直接拿 peerLinks[key].phoneId 去比，但手机侧那张表从来没人写，开关永远不亮。
+        // 长 id 和 8 位短 id 都算同一个会话。
+        function sameSession(a, b) {
+          var x = String(a || '')
+          var y = String(b || '')
+          if (!x || !y) return false
+          if (x === y) return true
+          return x.replace(/^session-/, '').slice(0, 8) === y.replace(/^session-/, '').slice(0, 8)
+        }
+        var linkedIds = (state && Array.isArray(state.linkedPhoneIds) && state.linkedPhoneIds) || []
         var linkedKey = onPhone
-          ? Object.keys(links).filter(function (key) { return String((links[key] || {}).phoneId) === sessionId })[0]
+          ? linkedIds.filter(function (id) { return sameSession(id, sessionId) })[0] || ''
           : (links[sessionId] ? sessionId : '')
         var on = !!linkedKey
 

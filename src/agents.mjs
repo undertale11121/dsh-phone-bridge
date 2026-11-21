@@ -81,11 +81,19 @@ export function removeAgent(id) {
 // Built-ins first, then subagents; running ones say so, dead ones are kept for
 // history but flagged.
 export function listAgents(host = '') {
-  const custom = loadAgents().map((item) => ({
-    ...item,
-    // A pid only means something on the machine that started the agent.
-    running: item.kind === 'subagent' ? (host && item.host === host ? alive(item.pid) : undefined) : undefined,
-  }))
+  // 手机上报的会话没有 pid 可探，只能按「最近一次上报」判活 —— 手机侧每 30 秒
+  // 报一次，所以 90 秒内算在线。原来对 kind='session' 一律返回 undefined，
+  // 面板上所有手机会话都显示成「已停止」。
+  const phoneFreshMs = 90_000
+  const custom = loadAgents().map((item) => {
+    let running
+    if (item.kind === 'subagent') running = host && item.host === host ? alive(item.pid) : undefined
+    else if (item.kind === 'session') {
+      const stamp = Number(new Date(String(item.at || '')).getTime()) || 0
+      running = stamp > 0 && Date.now() - stamp < phoneFreshMs
+    }
+    return { ...item, running }
+  })
   return [...BUILTINS.map((item) => ({ ...item, running: true })), ...custom]
 }
 

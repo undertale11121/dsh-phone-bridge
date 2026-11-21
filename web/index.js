@@ -210,7 +210,14 @@ function readThread(limit = 4) {
       .readFileSync(file, 'utf8')
       .split('\n')
       .filter(Boolean)
-      .map((line) => JSON.parse(line))
+      // 一行坏掉（进程被杀写半行）不能让整块对话变空白：坏行跳过，其余照读。
+      .map((line) => {
+        try {
+          return JSON.parse(line)
+        } catch {
+          return null
+        }
+      })
       .filter((row) => row && typeof row.text === 'string')
     return { total: rows.length, messages: rows.slice(-limit) }
   } catch {
@@ -247,9 +254,20 @@ function readAgents() {
       host: item.host === 'phone' ? 'phone' : 'desktop',
       // 面板要按时间倒序显示「最近的」会话，丢了 at 就只能显示文件里的老条目。
       at: String(item.at || ''),
-      kind: item.kind === 'subagent' ? 'subagent' : 'model',
-      // The file records a pid, not liveness, for subagents it started.
-      running: typeof item.running === 'boolean' ? item.running : pidAlive(item.pid),
+      // 三种：手机会话（session）/ 子智能体（subagent）/ 桌面模型（model）。
+      // 以前 session 被并进 model，面板分不出哪些是手机开着来的会话。
+      kind: item.kind === 'subagent' ? 'subagent' : item.kind === 'session' ? 'session' : 'model',
+      // 手机会话的 running 是注册时写死的 true、永不复核（几天前的旧条目也显示「运行中」）；
+      // 改按最后一次上报时间算：90 秒内上报过才算在跑。子智能体仍用 pid 探活。
+      running:
+        item.kind === 'session'
+          ? (() => {
+              const at = Date.parse(String(item.at || ''))
+              return Number.isFinite(at) && Date.now() - at < 90_000
+            })()
+          : typeof item.running === 'boolean'
+            ? item.running
+            : pidAlive(item.pid),
     }))
 }
 
@@ -264,6 +282,7 @@ async function snapshot() {
   }
   const health = await probe(background?.port || config.port)
   const lock = readJson(lockPath(), null)
+  const thread = readThread(50)
   return {
     role: isPhone() ? 'phone' : 'desktop',
     online: Boolean(health?.online),
@@ -277,7 +296,8 @@ async function snapshot() {
     permitLeft: Number(health?.permitLeft || 0),
     pendingPair: health?.pendingPair || null,
     code: Number(health?.codeLeft || 0) > 0 ? '' : '',
-    thread: readThread(4).messages,
+    thread: thread.messages,
+    threadTotal: thread.total,
     toggles: Object.fromEntries(TOGGLES.map((key) => [key, config[key] !== false])),
     devices: (config.devices || []).map((item) => ({
       id: shortSession(item.id),
@@ -315,8 +335,28 @@ async function snapshot() {
     collab: readCollab(config),
     // 每个会话的互联开关（面板上逐行勾选）。
     links: readLinks(config),
-    // 手机端：电脑那边同步过来的开关表（真源仍写在电脑的 desktop.json 里）。
-    peerLinks: (readJson(phoneConfigPath(), null)?.peerLinks) || {},
+    // 手机端：电脑那边同步过来的开关表。镜像写在 phone-links.json（桌面 links 的副本），
+    // 旧版把同一份数据写在 phone.json.peerLinks 里，读的时候两个都认。
+    peerLinks:
+      readJson(path.join(bridgeDir(), 'phone-links.json'), null) ||
+      readJson(phoneConfigPath(), null)?.peerLinks ||
+      {},
+    // 手机端「这个手机会话是否已和电脑联通」的唯一依据：电脑记的 phoneId + 本机映射的值。
+    // 之前 client 直接拿 peerLinks[key].phoneId 去比，但手机侧那张表从来没人写，开关永远不亮。
+    linkedPhoneIds: (() => {
+      const ids = new Set()
+      const mirror = readJson(path.join(bridgeDir(), 'phone-links.json'), null)
+      if (mirror && typeof mirror === 'object' && !Array.isArray(mirror)) {
+        for (const item of Object.values(mirror)) {
+          if (item && typeof item === 'object' && item.phoneId) ids.add(String(item.phoneId))
+        }
+      }
+      const peer = readJson(path.join(bridgeDir(), 'peer-links.json'), null)
+      if (peer && typeof peer === 'object' && !Array.isArray(peer)) {
+        for (const value of Object.values(peer)) if (value) ids.add(String(value))
+      }
+      return [...ids]
+    })(),
     agents: readAgents(),
     log: readLogTail(8),
     configPath: configPath(),
@@ -399,12 +439,15 @@ async function runAction(body) {
   if (body.action === 'linkRemote') {
     // 手机端会话界面上的开关：写回电脑，真源在电脑。
     const conf = readJson(phoneConfigPath(), null)
-    if (!conf?.url || !conf?.token) throw new Error('手机还没连上电脑：先在电脑面板上配对')
+    // 设备签名配对之后 phone.json 的 token 是空字符串，旧代码在这里强校验 token，
+    // 结果手机面板上的「互联」开关永远报「手机还没连上电脑」。地址可以从 peer.json
+    // 恢复，鉴权 bridgePost 会优先用设备签名。
+    const remoteBase = phoneBase(conf)
+    if (!remoteBase) throw new Error('手机还没连上电脑：先在电脑面板上配对')
     const phoneId = String(body.phoneId || '').trim()
     if (!phoneId) throw new Error('要指定哪个手机会话')
-    const remoteBase = String(conf.url).replace(/\/+$/, '')
     const payload = { phoneId, desktopId: String(body.desktopId || '').trim(), off: !!body.off }
-    const out = await bridgePost(remoteBase, '/collab', conf.token, payload)
+    const out = await bridgePost(remoteBase, '/collab', conf?.token, payload)
     if (!out || out.ok === false) throw new Error(String((out && out.text) || '电脑那边没同意'))
     try {
       // 只合并对端给的那几个键。这个文件同时还存着「自动分身映射」，
@@ -971,12 +1014,25 @@ async function wakeTick(agents) {
   // 接收方向不节流：这些本来就是该我看见的消息，压住只会让对话卡住。
 
   const skipped = []
+  // 已经投递成功的 seq。busy 组会让游标停住，若不记住「这条已经投过」，
+  // 同批里已成功的组会被每 3 秒重投一次（真踩过：同一句刷了几十遍）。
+  const delivered = new Set((Array.isArray(state.delivered) ? state.delivered : []).map((n) => Number(n)))
   // 已经被 agent_converse / peer_converse 当场读走的回复：同一个模型不该再看第二遍。
   const consumed = new Set(
     (readJson(path.join(bridgeDir(), 'consumed.json'), []) || []).map((n) => Number(n)),
   )
   const incoming = (data.messages || []).filter((item) => {
-    if (!item || item.from === 'desktop') return false
+    if (!item) return false
+    if (delivered.has(Number(item.seq))) {
+      // 上一轮已经投给模型了，只是游标被同批的 busy 组挡住；跨过去，别重投。
+      skipped.push(Number(item.seq) || 0)
+      return false
+    }
+    // 漏掉自己的 seq 会让游标永远停在它前面，于是每 3 秒重读同一批、重复投递（真踩过）。
+    if (item.from === 'desktop') {
+      skipped.push(Number(item.seq) || 0)
+      return false
+    }
     // silent 行是文件变更日志：留在对话里给下次翻，但**不唤醒**。
     // 顺手把游标跨过去，否则每 3 秒都会把它们重读一遍。
     if (item.silent === true || consumed.has(Number(item.seq))) {
@@ -1032,20 +1088,28 @@ async function wakeTick(agents) {
   // 影响我看回答」—— 逐条 followup 会把对话刷屏，而模型之间的话本来也不需要
   // 那么啰嗦：合并成一条，超长截断，全文仍留在工作台上可查。
   const groups = new Map()
+  // 点名了、但那个电脑会话没开着 / 正忙：游标停在这一条等它，不能改投、也不能丢。
+  const blockedSeqs = []
   for (const item of incoming) {
     const named = String(item.to || '').startsWith('desktop:') ? String(item.to).slice('desktop:'.length) : ''
-    let sessionId = pickByPinned?.id || ''
-    // 消息自己带了「这条是跟哪个电脑会话说的」，就投给它 —— 这是唯一能真正一对一的依据。
-    // 只靠 pinned（最后点过互联的那个）兜底，所有会话的回复都会挤进同一个。
     const fromDesktop = String(item.desktopId || '').trim()
-    if (fromDesktop && live.some((row) => row.id === fromDesktop)) sessionId = fromDesktop
+    let sessionId = ''
     if (named) {
-      // 点名的会话：先按 id / 裸 uuid / 左边栏标题认，再退到会话目录里的名字。
-      // 注意 resolveNamed 只查 registry，可能命中一个已经关掉的会话 —— 投进去必失败，
-      // 所以命中后还要确认它真的开在引擎里，否则退回「开着的那个」，消息不能丢。
+      // 点名优先，且必须真的投给点名对象：目标没开着就 blocked 等，不能悄悄改投到
+      // pinned 的会话（以前那样做，用户以为发给了 A，实际进了 B）。
       const matched = matchSession(live, named) || resolveNamed(named)
       const alive = matched && live.some((row) => row.id === matched.id)
-      sessionId = alive ? matched.id : pickByPinned?.id || ''
+      if (!alive) {
+        blockedSeqs.push(Number(item.seq) || 0)
+        state.lastError = `点名的电脑会话 ${named} 没开着，等它打开再投`
+        continue
+      }
+      sessionId = matched.id
+    } else if (fromDesktop && live.some((row) => row.id === fromDesktop)) {
+      // 消息自己带了「这条是跟哪个电脑会话说的」—— 唯一能真正一对一的依据。
+      sessionId = fromDesktop
+    } else {
+      sessionId = pickByPinned?.id || ''
     }
     if (!sessionId) {
       // 没有一一对应的电脑会话（这个会话没点互联开关）：**跳过这条并推进游标**。
@@ -1065,17 +1129,18 @@ async function wakeTick(agents) {
     try {
       state.lastWake = await wakeSession(agents, sessionId, composeBatch(items, who), wake.mode)
       state.lastError = ''
-      for (const item of items) sentSeqs.push(Number(item.seq) || 0)
-    } catch (error) {
-      state.lastError = String(error?.message || error)
-      // 「对方正忙」不算投递失败：消息留在工作台，游标照推，不然每 3 秒重投
-      // 一次、每次都把对方唤醒一轮，表现就是同一条消息反复出现（对端实测报过）。
-      const quiet = Boolean(error?.busy)
       for (const item of items) {
         const seq = Number(item.seq) || 0
-        if (quiet) skipped.push(seq)
-        else failedSeqs.push(seq)
+        sentSeqs.push(seq)
+        delivered.add(seq)
       }
+    } catch (error) {
+      state.lastError = String(error?.message || error)
+      // 「对方正忙」不是投递失败，也不是「可以丢掉」：wakeSession 忙时根本没投递，
+      // 消息还在工作台上。此时既不 skipped（那会推游标把消息越过、永久丢）也不
+      // failed（3 次就放弃），直接 continue 让游标停在这一条，等对方空下来再投。
+      if (error?.busy) continue
+      for (const item of items) failedSeqs.push(Number(item.seq) || 0)
       // 原来这里是 break：一个目标投不进去，排在它后面的组就永远没机会了，
       // 声音最大的那个坏会话会把整条链路堵死（代码审查发现）。
       continue
@@ -1109,6 +1174,8 @@ async function wakeTick(agents) {
     cursorNow = seq
   }
   state.cursor = cursorNow
+  // 只留 cursor 附近最近的 500 个，状态文件不会无限长。
+  state.delivered = [...delivered].filter((seq) => seq > cursorNow - 500).sort((a, b) => a - b).slice(-500)
   writeWakeState(state)
 }
 
@@ -1462,6 +1529,18 @@ async function inboxTick(agents, lastReport) {
   const config = readJson(phoneConfigPath(), null)
   const base = phoneBase(config)
   if (!base) return lastReport
+  // 会话列表上报要放在所有提前 return 之前：对齐失败、拉取失败、没活会话这几条路
+  // 都会提前返回，原来放在末尾等于「一出问题就不再上报」，手机上新开的对话就再也
+  // 同步不到电脑（实测踩过）。
+  const now = Date.now()
+  if (now - (Number(lastReport) || 0) > 30_000) {
+    try {
+      await reportPhoneSessions(agents, base, config?.token)
+      lastReport = now
+    } catch (error) {
+      console.log(`[phone-bridge] 上报手机会话失败：${String(error?.message || error)}`)
+    }
+  }
   const state = readJson(inboxStatePath(), { cursor: 0, lastError: '' })
 
   // 和桌面侧一个规矩：第一次跑先把 cursor 对齐到最新，不把历史灌进会话。
@@ -1548,8 +1627,19 @@ async function inboxTick(agents, lastReport) {
   const pinned = String(collab?.phoneSessionId || '')
 
   const skipped = []
+  // 已投递过的 seq：同批里其它消息 blocked 时游标会停住，不记住就会每轮重投。
+  const delivered = new Set((Array.isArray(state.delivered) ? state.delivered : []).map((n) => Number(n)))
   const incoming = (data?.messages || []).filter((item) => {
-    if (!item || item.from === 'phone') return false
+    if (!item) return false
+    if (delivered.has(Number(item.seq))) {
+      skipped.push(Number(item.seq) || 0)
+      return false
+    }
+    // 同上：手机自己发的消息不投，但必须进 skipped，否则游标卡在它前面、每轮重投同一批。
+    if (item.from === 'phone') {
+      skipped.push(Number(item.seq) || 0)
+      return false
+    }
     // 和桌面侧一致：silent 的变更日志不唤醒，但游标要跨过去。
     if (item.silent === true) {
       skipped.push(Number(item.seq) || 0)
@@ -1631,10 +1721,21 @@ async function inboxTick(agents, lastReport) {
         // 第一句告诉模型「这是哪个电脑会话的对话」，否则它不知道自己接的是谁的活
         const head = src ? `（这是电脑会话 ${src.replace(/^session-/, '').slice(0, 8)} 的对话）\n` : ''
         state.lastWake = await wakeSession(agents, target.id, head + composeBatch(rows, '电脑模型'), 'queue')
-        for (const item of rows) sent.push(Number(item.seq) || 0)
+        for (const item of rows) {
+          const seq = Number(item.seq) || 0
+          sent.push(seq)
+          delivered.add(seq)
+        }
         // 记住来源：回话时 sendAs/say 会把不点名的 desktop 自动改成 desktop:<来源>
         if (src) writeJson(lastSourcePath(), { desktopId: src, phoneId: target.id, at: Date.now() })
       } catch (error) {
+        // 「会话正忙」不是投递失败：wakeSession 明确用 error.busy 表示「等下再投」。
+        // 原来一律进 failedSeqs，连续 3 次就 skipped 把游标越过 —— 手机发的消息就
+        // 永久丢了（对方只是正在跑一回合，几秒后就能收）。所以 busy 走 blockedSeqs。
+        if (error?.busy) {
+          for (const item of rows) blockedSeqs.push(Number(item.seq) || 0)
+          continue
+        }
         fails.push(String(error?.message || error))
         for (const item of rows) failedSeqs.push(Number(item.seq) || 0)
       }
@@ -1656,6 +1757,20 @@ async function inboxTick(agents, lastReport) {
     }
     for (const seq of sent) delete giveUp[seq]
     state.giveUp = giveUp
+    // blocked（目标还没开 / 对方正忙）不能无限等：等够约 5 分钟就跳过并说明。
+    // 否则一条无主消息会把游标钉死，后面已成功的消息永远在游标外、每轮重投（代码审查发现）。
+    const blocked = state.blocked || {}
+    for (const seq of blockedSeqs) {
+      const times = (blocked[seq] || 0) + 1
+      if (times >= 100) {
+        skipped.push(seq)
+        delete blocked[seq]
+      } else {
+        blocked[seq] = times
+      }
+    }
+    for (const seq of [...sent, ...skipped]) delete blocked[seq]
+    state.blocked = blocked
     // 只推进到「从当前 cursor 起连续处理过」的那一段。以前取 min(failedSeqs) 当边界，
     // 分组交错时（A 组 seq 1,3 成功、B 组 seq 2 失败）会把已经投成功的 3 留在游标外，
     // 下一轮重投一遍 —— 模型会看到重复消息（代码审查发现）。
@@ -1671,6 +1786,7 @@ async function inboxTick(agents, lastReport) {
       cursorNow = seq
     }
     state.cursor = cursorNow
+    state.delivered = [...delivered].filter((seq) => seq > cursorNow - 500).sort((a, b) => a - b).slice(-500)
     writeJson(inboxStatePath(), state)
     // 投递循环的诊断：游标不动时靠这一行判断是哪一类消息把它钉住了。
     try {
@@ -1680,11 +1796,6 @@ async function inboxTick(agents, lastReport) {
     } catch {}
   }
 
-  const now = Date.now()
-  if (now - (Number(lastReport) || 0) > 30_000) {
-    await reportPhoneSessions(agents, base, config?.token)
-    return now
-  }
   return lastReport
 }
 

@@ -184,7 +184,9 @@ export function read(since = 0, limit = 200, as = '') {
   const visible = viewer
     ? all.filter((row) => {
         const to = row.to || 'all'
-        return to === 'all' || to === viewer || row.from === viewer
+        // `to` 可能是「角色:具体会话」（phone:登录页 / desktop:xxx），
+        // 只按 `to === viewer` 判会把这类消息整个漏掉 —— 手机侧游标直接越过它们、永久丢。
+        return to === 'all' || to === viewer || to.startsWith(`${viewer}:`) || row.from === viewer
       })
     : all
   const messages = visible.filter((row) => row.seq > Number(since || 0)).slice(0, Number(limit) || 200)

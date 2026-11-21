@@ -197,7 +197,12 @@ export class PhoneBridge {
     this.running = false
     this.relay = null
     this.relayBusy = Promise.resolve()
-    this.relayPending = 0
+    // 两个不同的东西，不能共用一个字段：relayStarting 是「正在建 relay 的 Promise」，
+    // relayCalls 是「在途调用数」。以前都塞进 relayPending，withRelay 的自增会把它
+    // 从 Promise 变成数字，ensureRelay 又把那个数字当 Promise 返回 →
+    // 闲置 60 秒断开 relay 之后，下一次手机工具调用必报 relay.callTool is not a function。
+    this.relayStarting = null
+    this.relayCalls = 0
     this.relayIdle = null
     this.authFailed = false
     this.connected = false
@@ -251,8 +256,11 @@ export class PhoneBridge {
     const config = loadPhoneConfig()
     config.url = ''
     config.token = ''
+    // autoUrl 是后来加的「请求配对」地址。漏清它会继续连旧电脑：paired 仍为 true、
+    // 面板显示「已断开」但手机照旧连过去并执行任务。
+    config.autoUrl = ''
     savePhoneConfig(config)
-    this.config = { ...this.config, url: '', token: '' }
+    this.config = { ...this.config, url: '', token: '', autoUrl: '' }
     this.connected = false
     this.desktop = null
   }
@@ -317,6 +325,7 @@ export class PhoneBridge {
         this.connected = true
         this.desktop = { ...(hello?.desktop || {}), paired: Boolean(hello?.paired) }
         backoff = 1000
+        this.authMisses = 0
         await this.announceOnce('（手机已连上电脑）')
         log(
           `已连接桌面：${this.desktop?.name || '?'}（${this.desktop?.platform || '?'}）${
@@ -328,10 +337,19 @@ export class PhoneBridge {
         this.connected = false
         const status = error?.status
         if (status === 401) {
-          log('桌面端拒绝了 token，需要重新配对')
-          this.authFailed = true
-          this.running = false
-          return
+          // 401 有两种：设备被电脑侧删掉（真需要重新配对）和时钟偏差/挑战过期（退避就能恢复）。
+          // 以前一律永久停，手机与电脑时间差超过 5 分钟就再也连不上，只能重启。
+          this.authMisses = (this.authMisses || 0) + 1
+          this.lastError = '电脑端拒绝了设备凭据（可能是两端时钟差异，或电脑侧删掉了这台设备）'
+          log(`${this.lastError}，第 ${this.authMisses} 次`)
+          if (this.authMisses >= 6) {
+            this.authFailed = true
+            this.running = false
+            log('连续 6 次被拒，停止重试；重新配对后再启动')
+            return
+          }
+          await sleep(Math.min(2000 * this.authMisses, 30_000))
+          continue
         }
         this.lastError = explainError(error)
         log(`连接失败（${this.lastError}），${Math.round(backoff / 1000)}s 后重试`)
@@ -502,8 +520,8 @@ export class PhoneBridge {
     if (this.relay) return this.relay
     // 两个工具调用同时进来时，await child.start() 这段时间 this.relay 还是 null，
     // 会各起一个中继（手机上表现为两个 relay.cjs 抢同一份配置）。复用同一个 Promise。
-    if (this.relayPending) return this.relayPending
-    this.relayPending = (async () => {
+    if (this.relayStarting) return this.relayStarting
+    this.relayStarting = (async () => {
       try {
         if (!fs.existsSync(RELAY)) throw new Error(`找不到手机桥接中继：${RELAY}`)
         if (!fs.existsSync(RELAY_CONFIG)) throw new Error(`找不到手机桥接配置：${RELAY_CONFIG}`)
@@ -521,10 +539,10 @@ export class PhoneBridge {
         }
         return child
       } finally {
-        this.relayPending = null
+        this.relayStarting = null
       }
     })()
-    return this.relayPending
+    return this.relayStarting
   }
 
   // The relay/APK cannot run two tool calls at once; serialize them.
@@ -535,11 +553,11 @@ export class PhoneBridge {
       release = resolve
     })
     await previous
-    this.relayPending += 1
+    this.relayCalls += 1
     try {
       return await fn()
     } finally {
-      this.relayPending = Math.max(0, this.relayPending - 1)
+      this.relayCalls = Math.max(0, this.relayCalls - 1)
       release()
       // 所有用到 relay 的路径（包括启动时的 tools/list）都要把空闲计时器续上，
       // 否则那条连接会一直挂着，dsh-go 的悬浮条就收不掉。
@@ -582,7 +600,7 @@ export class PhoneBridge {
     this.relayIdle = setTimeout(() => {
       this.relayIdle = null
       // 还有请求在路上就别断：断开会把 dsh-go 那边正在跑的一轮提前结束。
-      if (this.relayPending > 0) {
+      if (this.relayCalls > 0 || this.relayStarting) {
         this.scheduleRelayIdle()
         return
       }
@@ -1165,7 +1183,7 @@ export class PhoneBridge {
     const url = `http://${address.includes(':') ? address : `${address}:${Number(port) || 8787}`}`
     const res = await this.postAt(url, '/request', { v: 2, device: this.describeDevice() })
     if (!res?.ok) throw new Error(res?.error || '电脑没有接受配对请求')
-    this.config = { ...this.config, autoUrl: url }
+    this.config = { ...this.config, autoUrl: url, url: '', token: '' }
     writeJson(phoneConfigPath(), this.config)
     if (this.running) this.peer?.reconfigure()
     log(`已请求配对：${url}（等电脑上点允许）`)
@@ -1918,10 +1936,19 @@ export async function runPhoneMcp({ withMcp = true } = {}) {
       return result.replies.map((row) => `${row.seq}. 电脑模型：${row.text}`).join('\n')
     },
     async peer_read(args) {
-      const data = await bridge.readThread(Number(args?.since || 0), 0)
-      const rows = (data?.messages || []).slice(0, Number(args?.limit || 40))
+      const limit = Math.max(1, Math.min(200, Number(args?.limit || 40)))
+      // 服务端 /thread?since= 的语义是「从 since 往后取」，所以 since=0 拿到的是**最老**
+      // 的几条。以前直接 slice(0, limit) → 工作台超过 40 条以后，模型永远只看到开头，
+      // 以为对话停在很早以前。先探最新 seq，再从尾部窗口取。
+      const head = await bridge.readThread(0, 0)
+      const maxSeq = Number(head?.next || 0)
+      if (!maxSeq) return '工作台上还没有对话。'
+      const since = Math.max(0, maxSeq - limit * 2)
+      const data = await bridge.readThread(since, 0)
+      const rows = (data?.messages || []).slice(-limit)
       if (!rows.length) return '工作台上还没有对话。'
-      return rows.map((row) => `${row.seq}. ${clockOf(row.at)} ${row.from === 'desktop' ? '电脑模型' : '手机模型'}：${row.text}`).join('\n')
+      const more = Number(data?.total || 0) > rows.length ? `\n（只显示最近 ${rows.length} 条，更早的用 since 翻页）` : ''
+      return rows.map((row) => `${row.seq}. ${clockOf(row.at)} ${row.from === 'desktop' ? '电脑模型' : '手机模型'}：${row.text}`).join('\n') + more
     },
     async phone_test(args) {
       if (!args?.goal) throw new Error('缺少 goal')

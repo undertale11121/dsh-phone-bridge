@@ -549,8 +549,6 @@ class DesktopBridge {
       } catch (error) {
         return sendJson(res, 200, { ok: false, error: String(error?.message || error) })
       }
-      res.writeHead(204)
-      return res.end()
     }
     if (req.method === 'POST' && route === '/prog') {
       const body = await readBody(req)
@@ -968,7 +966,7 @@ class DesktopBridge {
       if (this.config.allowShell === false) throw new Error('电脑端关闭了「让手机执行命令」')
       if (!args?.command) throw new Error('缺少 command')
       log(`手机要求执行命令：${truncate(String(args.command), 120)}`)
-      return { text: await runLocalShell({ command: String(args.command), cwd: args.cwd }) }
+      return { text: await runLocalShell({ command: String(args.command), cwd: args.cwd, timeoutMs: args.timeoutMs }) }
     }
     if (op === 'file.get') {
       if (this.config.allowFiles === false) throw new Error('电脑端关闭了文件传输')
@@ -1002,7 +1000,6 @@ class DesktopBridge {
     // 宿主半（web/index.js 的 installHostTools）发来的调用：op 就是工具名。
     // 它从 exec.agent 拿到的是真实会话 id，比 MCP 半可靠，守卫用它才有意义。
     const toolHandler = this.toolHandlers?.[op]
-    console.error('[phone-bridge] /call op=', op, ' handlers=', Object.keys(this.toolHandlers || {}).length, ' hit=', typeof toolHandler)
     if (typeof toolHandler === 'function') {
       if (process.env.PHONE_BRIDGE_NO_GATE !== '1') {
         const gate = gateMessage(op, readLinksFile() || {}, sessionId || '')
@@ -1629,10 +1626,25 @@ export async function runDesktopMcp({ mcp = true } = {}) {
   }
   const port = await bridge.start()
   writeLock({ pid: process.pid, port, log: desktopLogPath(), foreground: true })
+  // 注意：一旦注册了 SIGTERM/SIGINT 监听器，Node 就不再按默认行为退出。
+  // 以前这里只 dropLock 不退出 → Ctrl+C 后进程还占着 8787，锁却没了，
+  // 下次 ensureDesktopServer 以为没实例、spawn 新进程撞 EADDRINUSE。
+  let closing = false
+  const shutdown = () => {
+    if (closing) return
+    closing = true
+    try {
+      bridge.stop?.()
+    } catch {}
+    try {
+      removeLock()
+    } catch {}
+    setTimeout(() => process.exit(0), 50).unref?.()
+  }
   const dropLock = () => removeLock()
   process.on('exit', dropLock)
-  process.on('SIGTERM', dropLock)
-  process.on('SIGINT', dropLock)
+  process.on('SIGTERM', shutdown)
+  process.on('SIGINT', shutdown)
   ensureDir(bridgeDir())
   log(`桌面端桥接已监听 ${config.host}:${port}`)
   const pairs = bridge.pairing()
@@ -1725,13 +1737,13 @@ export async function runDesktopMcp({ mcp = true } = {}) {
         return { text: `已生成新配对串；手机若还连得上会继续用设备密钥自动重连。\n${bridge.pairing().join('\n')}` }
       }
       if (id === 'log') {
-        return { text: readLogTail(desktopLogPath(), 40).join('\n') || '还没有日志' }
+        return { text: readLogTail(desktopLogPath(), 40) || '还没有日志' }
       }
       if (id.startsWith('toggle:')) {
         const [, key, value] = id.split(':')
         if (key in config) {
           patchDesktopConfig({ [key]: value === '1' })
-          return { text: `已${config[key] ? '开启' : '关闭'} ${key}` }
+          return { text: `已${value === '1' ? '开启' : '关闭'} ${key}` }
         }
       }
       return { text: `不认识的操作：${id}` }
@@ -2116,8 +2128,10 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
       // 本实例要，免得明明有 192.168.x.x 却说「没有局域网 IPv4」骗人。
       let pairs = info.pairing || []
       if (!pairs.length) {
+        // handlers 是对象字面量、调用处是 handler(args)，所以 this 恒为 undefined。
+        // 以前写 this?.pairing() 永远拿不到 → 局域网里也报「没有局域网 IPv4」。用闭包里的实例。
         try {
-          pairs = typeof this?.pairing === 'function' ? this.pairing() : []
+          pairs = bridge.pairing() || []
         } catch {
           pairs = []
         }
@@ -2196,12 +2210,8 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
       dropLock()
     },
   })
+  // --serve 只是不许退出；退出信号统一由上面注册的 shutdown 处理，不要重复注册。
   if (!mcp) await new Promise(() => {})
-  process.on('SIGTERM', () => {
-    bridge.stop()
-    dropLock()
-    process.exit(0)
-  })
 }
 
 // 桌面子智能体需要 `dsh` 命令行（agent-run.mjs 用它跑 headless 会话）。
@@ -2358,6 +2368,20 @@ function localShellSpec(command) {
   return { file: process.env.SHELL && fs.existsSync(process.env.SHELL) ? process.env.SHELL : 'bash', args: ['-lc', command] }
 }
 
+// 杀 shell 子进程（Windows 上要连孙进程一起，否则守护进程还占着管道）。
+function killTree(child, signal) {
+  try {
+    if (!child?.pid) return
+    if (process.platform === 'win32') {
+      spawn('taskkill', ['/T', '/F', '/PID', String(child.pid)], { windowsHide: true, stdio: 'ignore' })
+    } else {
+      child.kill(signal)
+    }
+  } catch {
+    /* 进程已经没了 */
+  }
+}
+
 function runLocalShell(args) {
   return new Promise((resolve) => {
     const spec = localShellSpec(String(args.command || ''))
@@ -2380,10 +2404,26 @@ function runLocalShell(args) {
       settled = true
       resolve(formatShell({ stdout: truncate(stdout, 400_000), stderr: truncate(stderr, 100_000), ...payload }))
     }
-    child.stdout?.on('data', (c) => (stdout += c))
-    child.stderr?.on('data', (c) => (stderr += c))
+    child.stdout?.on('data', (c) => {
+      if (stdout.length < 400_000) stdout += c
+    })
+    child.stderr?.on('data', (c) => {
+      if (stderr.length < 100_000) stderr += c
+    })
+    // 命令可能挂死（sleep 9999 / yes / 守护进程继承了 stdout）：到点先 SIGTERM，
+    // 2 秒后还在就 SIGKILL，否则 /call 永远不返回、后台桥接被一个命令占死。
+    const limitMs = Number(args.timeoutMs) > 0 ? Math.min(Number(args.timeoutMs), 30 * 60_000) : 5 * 60_000
+    const timer = setTimeout(() => {
+      killTree(child, 'SIGTERM')
+      setTimeout(() => killTree(child, 'SIGKILL'), 2000)
+      finish({ code: -1, stderr: `${stderr}\n命令超时（${Math.round(limitMs / 1000)} 秒），已终止` })
+    }, limitMs)
+    timer.unref?.()
     child.on('error', (error) => finish({ code: -1, stderr: `${stderr}启动 shell 失败：${error.message}` }))
-    child.on('close', (code) => finish({ code }))
+    child.on('close', (code) => {
+      clearTimeout(timer)
+      finish({ code })
+    })
   })
 }
 
