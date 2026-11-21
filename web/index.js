@@ -1412,7 +1412,7 @@ const readPeerLinks = () => {
 async function ensureDesktopSession(agents, live, desktopId) {
   const links = readPeerLinks() || {}
   const known = links[desktopId]
-  if (known && live.some((row) => row.id === known)) return { id: known }
+  if (known && live.some((row) => row.id === known)) return { id: known, created: false }
   if (typeof agents?.create !== 'function') throw new Error('这台引擎不支持自动新开会话（agents.create 不可用）')
   // 映射里记着但会话已经不在了（应用重启过）——复用同一个 id 重新建，别让对话越开越多
   const id = known && /^session-/.test(known) ? known : `session-${crypto.randomUUID()}`
@@ -1430,13 +1430,13 @@ async function ensureDesktopSession(agents, live, desktopId) {
     // 直接沿用这个 id：投得进去就投，投不进去由上层记失败并最终放弃。
     if (/already exists/i.test(message)) {
       writeJson(peerLinksPath(), { ...readPeerLinks(), [desktopId]: id })
-      return { id }
+      return { id, created: false }
     }
     throw error
   }
   writeJson(peerLinksPath(), { ...readPeerLinks(), [desktopId]: created })
   console.log(`[phone-bridge] 电脑会话 ${String(desktopId).replace(/^session-/, '').slice(0, 8)} → 手机会话 ${created.replace(/^session-/, '').slice(0, 8)}`)
-  return { id: created }
+  return { id: created, created: true }
 }
 
 // 配对信息在 peer.json 的 pairs 里；phone.json 的 url 会被桥接清空，不能只信它。
@@ -1515,10 +1515,10 @@ async function inboxTick(agents, lastReport) {
   // 否则用户会觉得「点了没反应」，要等第一条消息才冒出新会话。
   if (peerLinks && Object.keys(peerLinks).length) {
     for (const [desktopId, entry] of Object.entries(peerLinks)) {
-      if (!desktopId || (entry && entry.phoneId)) continue
+      if (!desktopId || entry) continue
       try {
         const made = await ensureDesktopSession(agents, liveNow, desktopId)
-        if (made && made.id) {
+        if (made && made.id && made.created) {
           const line = `${new Date().toISOString()} 预建手机会话：${desktopId.replace(/^session-/, '').slice(0, 8)} → ${String(made.id).replace(/^session-/, '').slice(0, 8)}\n`
           console.log(`[phone-bridge] ${line.trim()}`)
           try { fs.appendFileSync(path.join(bridgeDir(), 'inbox-boot.log'), line) } catch {}
