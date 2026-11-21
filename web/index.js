@@ -71,6 +71,50 @@ function appendCappedLog(name, line) {
   fs.appendFileSync(file, line)
 }
 
+/** 同机器上是否还有这个 pid（跨进程单例用）。 */
+function processAlive(pid) {
+  const n = Number(pid) || 0
+  if (!(n > 0)) return false
+  try {
+    process.kill(n, 0)
+    return true
+  } catch (error) {
+    return error?.code === 'EPERM'
+  }
+}
+
+const LEASE_TTL_MS = 45_000
+/**
+ * 抢一份跨进程租约（文件 + pid + 心跳时间）。
+ * 同一个 DSH_HOME 下只允许一个进程跑收件器/唤醒器：否则两个进程各自 read-modify-write
+ * 同一个状态文件，消息会被投两遍。租约 45 秒没心跳就视为进程已死，可以被接管。
+ */
+function acquireLease(name) {
+  const file = path.join(bridgeDir(), `lease-${name}.json`)
+  const now = Date.now()
+  let current = null
+  try {
+    current = JSON.parse(fs.readFileSync(file, 'utf8'))
+  } catch {
+    current = null
+  }
+  if (current && Number(current.pid) !== process.pid) {
+    const fresh = now - (Number(current.at) || 0) < LEASE_TTL_MS
+    if (fresh && processAlive(current.pid)) return false
+  }
+  try {
+    writeJson(file, { pid: process.pid, at: now })
+  } catch {
+    return false
+  }
+  return true
+}
+
+/** 续租；返回 false 表示租约已被别的进程接管，本进程应该停下。 */
+function renewLease(name) {
+  return acquireLease(name)
+}
+
 function writeJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const temp = `${file}.${process.pid}.tmp`
@@ -1016,6 +1060,8 @@ async function fulfilPendingSession() {
 }
 
 async function wakeTick(agents) {
+  // 跨进程租约：被另一个 DSH 进程接管后就别再投，否则两边各投一遍。
+  if (!renewLease('wake')) return
   const config = readConfig()
   const wake = readWake(config)
   let state
@@ -1981,6 +2027,10 @@ function installInbox(ctx) {
   // 3 秒轮询，它们各自持有自己的游标、互相覆盖 state —— 表现就是同一条消息被反复重投。
   if (globalThis.__phoneBridgeInboxStarted) return
   globalThis.__phoneBridgeInboxStarted = true
+  if (!acquireLease('inbox')) {
+    console.log('[phone-bridge] 另一个 DSH 进程已经在收消息了，本进程不重复起一个轮询')
+    return
+  }
   ctx.inject(['agents'], (scope) => {
     // 收件器出问题最难查：定时器里的错误会被吞掉，界面上只看到「消息没来」。
     // 所以启动和每次失败都留一行在 bridge 目录，出事了直接看文件。
@@ -2619,7 +2669,16 @@ async function callBridgeTool(name, args, sessionId, signal = null) {
 
 const HOST_TOOL_OUTPUT = {
   schema: { type: 'object', additionalProperties: true },
-  render: (_args, value) => [{ type: 'text', text: String(value?.text ?? '') }],
+  // 手机截图走的是 phone_tool(screen) → 返回 { text, images:[{mimeType,data}] }。
+  // 只渲染 text 的话图片被丢掉，模型只看到「截图：/root/shot.png」却拿不到像素。
+  render: (_args, value) => {
+    const blocks = [{ type: 'text', text: String(value?.text ?? '') }]
+    for (const image of Array.isArray(value?.images) ? value.images : []) {
+      if (!image || typeof image.data !== 'string' || !image.data) continue
+      blocks.push({ type: 'image', data: image.data, mimeType: image.mimeType || 'image/png' })
+    }
+    return blocks
+  },
 }
 
 // defineTool 从哪来：先看 tools 服务自己有没有（cordis 服务的形状不止一种），

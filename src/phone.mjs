@@ -473,6 +473,12 @@ export class PhoneBridge {
 
   async handleRequest(req) {
     const started = Date.now()
+    // 执行一个慢操作（截屏/装 APK/长 shell）时，pollForever 被占住不再 /poll，
+    // 电脑侧 70 秒收不到心跳就判离线 —— 模型白等到超时。执行期间自己发心跳。
+    const heartbeat = setInterval(() => {
+      this.get('/poll', { wait: '0' }, 5000).catch(() => {})
+    }, 20_000)
+    heartbeat.unref?.()
     try {
       const data = await this.dispatch(req.op, req.args || {}, req.id)
       await this.post('/res', { id: req.id, ok: true, data: data ?? {} })
@@ -482,6 +488,8 @@ export class PhoneBridge {
         () => {},
       )
       log(`执行 ${req.op} 失败：${explainError(error)}`)
+    } finally {
+      clearInterval(heartbeat)
     }
   }
 
