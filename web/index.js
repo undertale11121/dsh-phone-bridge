@@ -1733,7 +1733,7 @@ function installInbox(ctx) {
 
 const ENGINE_ENTRY_ID = 'dsh-phone-bridge-engine'
 const ENGINE_CLIENT = '@deepseek-ai/dsh-mcp-client'
-const ENGINE_BUNDLE = 'dsh-phone-bridge'
+const ENGINE_BUNDLE = '@undertale11121/dsh-phone-bridge'
 const AUTOPATCH_ENV = 'PHONE_BRIDGE_NO_AUTOPATCH'
 
 /** bridge.mjs 在哪：npm 装到包根、bundle 自带、或旧版 ~/.dsh/phone-bridge/。 */
@@ -1825,7 +1825,7 @@ function profilesWithThisBundle() {
     } catch {
       continue
     }
-    const listed = Array.isArray(bundles) && (bundles.includes(ENGINE_BUNDLE) || bundles.includes('dsh-phone-bridge-web'))
+    const listed = Array.isArray(bundles) && (bundles.includes(ENGINE_BUNDLE) || bundles.includes('dsh-phone-bridge') || bundles.includes('dsh-phone-bridge-web'))
     const mentioned = /dsh-phone-bridge(-web)?\b/.test(patch)
     if (listed || mentioned) found.push({ patchFile, patch })
   }

@@ -16,7 +16,7 @@ function __buildPhoneBridge(require) {
       return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds())
     }
 
-    var PACKAGE = 'dsh-phone-bridge-web'
+    var PACKAGE = '@undertale11121/dsh-phone-bridge'
     // The id of the sidebar row and of its `main` page. It must not collide
     // with the host's own panels (`plugins`, `dsh-market`, …).
     var PANEL_ID = 'phone-bridge'
@@ -959,6 +959,6 @@ function __buildPhoneBridge(require) {
     return module.exports
 }
 
-;['dsh-phone-bridge', 'dsh-phone-bridge-web'].forEach(function (id) {
+;['@undertale11121/dsh-phone-bridge', 'dsh-phone-bridge', 'dsh-phone-bridge-web'].forEach(function (id) {
   window.__ModuleLoader__.load({ id: id, factory: __buildPhoneBridge })
 })

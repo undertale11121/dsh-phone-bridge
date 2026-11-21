@@ -182,7 +182,7 @@ check('导出 apply 与 inject', typeof client.apply === 'function' && Array.isA
 globalThis.document = fakeDocument
 client.apply(ctx)
 const three = slotsSeen.length === 5
-  && slotsSeen[0].descriptor.name === 'plugins.bundle.config' && slotsSeen[0].descriptor.key === 'dsh-phone-bridge-web'
+  && slotsSeen[0].descriptor.name === 'plugins.bundle.config' && slotsSeen[0].descriptor.key === '@undertale11121/dsh-phone-bridge'
   && slotsSeen[1].descriptor.name === 'plugins.bundle.config' && slotsSeen[1].descriptor.key === 'dsh-phone-bridge'
   && slotsSeen[2].descriptor.name === 'sidebar.panellist' && slotsSeen[2].descriptor.id === 'phone-bridge'
   && slotsSeen[3].descriptor.name === 'main' && slotsSeen[3].descriptor.key === 'phone-bridge'
