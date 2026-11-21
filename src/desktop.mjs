@@ -1892,7 +1892,10 @@ export async function runDesktopMcp({ mcp = true } = {}) {
       if (!targeted && !listAgents().some((item) => item.id === to || item.name === to)) {
         throw new Error(`没有这个收件人：${to}（可写 all / phone / desktop / phone:<会话名> / desktop:<会话名>，或用 agent_list 看有哪些）`)
       }
-      const row = threadAppend('desktop', args?.text, to)
+      // 和 agent_send 一样带上来历：不传的话对端只能兜底投到默认会话，
+      // 用户看到的现象就是「在别的会话里问，回复却灌进插件那个对话」。
+      const fromId = args?.from ? String(args.from) : newestDesktopSessionId() || undefined
+      const row = threadAppend('desktop', args?.text, to, { desktopId: fromId })
       log(`等 ${nameOf(to)} 回话（最多 ${seconds}s）…`)
       const deadline = Date.now() + seconds * 1000
       while (Date.now() < deadline) {
@@ -1921,11 +1924,11 @@ export async function runDesktopMcp({ mcp = true } = {}) {
       return `已停掉 ${result.name}（${result.stopped}）`
     },
     async phone_say(args) {
-      const row = threadAppend('desktop', args?.text)
+      const row = threadAppend('desktop', args?.text, 'phone', { desktopId: newestDesktopSessionId() || undefined })
       return `已放到工作台上（第 ${row.seq} 条）。手机模型下次运行时能看到；要立刻等它回话用 peer_converse。`
     },
     async phone_converse(args) {
-      const row = threadAppend('desktop', args?.text)
+      const row = threadAppend('desktop', args?.text, 'phone', { desktopId: newestDesktopSessionId() || undefined })
       const seconds = Math.min(Math.max(Number(args?.waitSeconds || 120), 5), 600)
       log(`等待手机模型回话（最多 ${seconds}s）…`)
       const result = await threadWait('desktop', row.seq, seconds * 1000)
