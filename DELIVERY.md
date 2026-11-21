@@ -43,7 +43,30 @@
 
 ## 还没完全通的（今天早上最好先知道）
 
-**手机上自动新建会话还不行。**
+**先说最重要的：手机侧预建会话的一个致命手误已经修好了。**
+
+`inbox-boot.log` 里每 3 秒一条：
+
+```
+预建失败 session-3b356685…：Cannot access 'titleOf' before initialization
+```
+
+是我上一版加「给预建会话起标题」时把 `const titleOf` 写在了使用它的预建循环**后面**，
+`const` 的暂时性死区让每轮预建都直接抛错 → **一条手机会话都建不出来**，用户在 App 里自然看不到。
+已把声明移到循环之前，`web/index.js` 已推到手机（148851 字节，`node --check` 通过），**重启 App 后生效**。
+
+**再往下的硬限制：手机版 DSH 的 agent factory 时有时无。**
+
+偶发日志：
+
+```
+no agent factory registered (load an agent-loop plugin)
+```
+
+`dsh-base` 的 patch 里确实有 `agent-loop` 行（`/opt/dsh/node_modules/@deepseek-ai/dsh-base/cordis.patch.yml:517`），
+包也在 `/opt/dsh/node_modules/@deepseek-ai/dsh-agent-loop`，但手机 profile 自己的 `node_modules` 里
+**没有 `@deepseek-ai/`**（桌面 profile 有 190 个包），运行时会偶发拿不到 factory。
+降级逻辑已经就位：真建不出来时投到「最近活跃的手机会话」，消息至少能看见。
 
 手机侧 DSH 报：
 
