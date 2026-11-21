@@ -567,6 +567,17 @@ async function runAction(body) {
       ? { phoneId, at: new Date().toISOString() }
       : { at: new Date().toISOString() }
     writeLinks(links)
+    // 关键：点了这个会话的开关，投递目标就得跟着切到它。
+    // 只写 links 不写 collab 时，wakeTick 的 pinned 还指着上一个会话 ——
+    // 表现就是「有时能收到有时不行」（新会话建的对话收不到消息）。
+    const collab = readCollab(config)
+    if (collab.desktopSessionId !== desktopId) {
+      collab.desktopSessionId = desktopId
+      const wake = readWake(config)
+      wake.sessionId = desktopId
+      wake.enabled = true
+      patchConfig({ collab, wake })
+    }
     const short = (id) => String(id).replace(/^session-/, '').slice(0, 8)
     return { text: phoneId ? `已把这个会话连到手机 ${short(phoneId)}` : '已打开互联：手机会给这个会话开一个对应的对话' }
   }
@@ -2778,8 +2789,70 @@ async function ensureBridgeRunning() {
 // 宿主半注册工具的意义是「拿得到准确的当前会话」，所以只在桌面侧做；手机上
 // 工具面由 MCP 半提供，再注册一遍只会让模型看到两套同名工具。
 let hostToolsRegistering = false
+// 手机端没有会话级 UI 插槽（dsh-go 是原生界面，画不出 web 的
+// conversation.session.header.actions），所以给手机模型一个工具：用户说
+// 「和电脑连上」「开互联」，模型自己拿到当前会话 id 去连。
+async function phoneLinkToolRun(args, exec) {
+  const sessionId = String(exec?.agent?.session?.id || exec?.agent?.id || '')
+  if (!sessionId) return { ok: false, text: '拿不到当前会话，请在这个对话里再说一次' }
+  const config = readJson(phoneConfigPath(), null)
+  const base = phoneBase(config)
+  if (!base) return { ok: false, text: '还没配对电脑：先在「互联」面板里点「找电脑」' }
+  const off = args?.off === true
+  try {
+    const result = await bridgePost(base, '/collab', config?.token, { phoneId: sessionId, off }, 15000)
+    const text = result?.pending
+      ? '电脑上还没有对应的对话，正在给你开一个新的…'
+      : off
+        ? '已断开互联'
+        : '已连上电脑，两边开始互相同步'
+    return { ok: true, text }
+  } catch (error) {
+    return { ok: false, text: `连不上电脑：${errorText(error)}` }
+  }
+}
+
+function installPhoneLinkTool(ctx) {
+  const register = (service) => {
+    if (!service || typeof service.register !== 'function') return
+    if (globalThis.__phoneBridgeLinkToolRegistered) return
+    globalThis.__phoneBridgeLinkToolRegistered = true
+    service.register({
+      name: 'phone_bridge_link',
+      description:
+        '把当前这个对话和电脑上的一个对话连起来（开启互联）。手机界面没有会话级按钮，用户说「和电脑连上」「开互联」「连到电脑」时调用这个工具。',
+      parameters: {
+        type: 'object',
+        properties: { off: { type: 'boolean', description: 'true 表示断开互联' } },
+        additionalProperties: false,
+      },
+      output: HOST_TOOL_OUTPUT,
+      timeoutMs: 40000,
+      async execute(args, exec) {
+        return phoneLinkToolRun(args, exec)
+      },
+    })
+  }
+  let direct = null
+  try {
+    direct = ctx.tools
+  } catch {
+    direct = null
+  }
+  register(direct)
+  try {
+    ctx.inject(['tools'], (scope) => register(scope.tools))
+  } catch {
+    /* 已经在上面直接注册过了 */
+  }
+}
+
 function installHostTools(ctx) {
-  if (isPhone()) return
+  if (isPhone()) {
+    // 手机侧只需要「开互联」这一个工具，26 个电脑操作用不到。
+    installPhoneLinkTool(ctx)
+    return
+  }
   if (hostToolsStarted || hostToolsRegistering) return
   // 不在调用前置 hostToolsStarted：注册失败（tools 服务还没就绪）就再也不会重试。
   hostToolsRegistering = true
