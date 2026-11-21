@@ -364,8 +364,16 @@ export function qrSvg(text, { margin = 4, dark = '#0b0c0e', light = '#ffffff', l
   for (let y = 0; y < size; y += 1) {
     for (let x = 0; x < size; x += 1) if (modules[y][x]) path.push(`M${x + margin} ${y + margin}h1v1h-1z`)
   }
-  const title = label ? `>${label.replace(/[<>&]/g, '')}</title>` : ''
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${full * 8}" height="${full * 8}" viewBox="0 0 ${full} ${full}" shape-rendering="crispEdges" role="img" aria-label="${label || 'QR'}"><title${title}<rect width="${full}" height="${full}" fill="${light}"/><path d="${path.join('')}" fill="${dark}"/></svg>`
+  // label 为空时旧代码会输出 `<title<rect`（非法 SVG）；含引号时还能注入属性。
+  const esc = (v) =>
+    String(v == null ? '' : v)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+  const labelText = esc(label || 'QR')
+  const title = label ? `<title>${labelText}</title>` : ''
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${full * 8}" height="${full * 8}" viewBox="0 0 ${full} ${full}" shape-rendering="crispEdges" role="img" aria-label="${labelText}">${title}<rect width="${full}" height="${full}" fill="${light}"/><path d="${path.join('')}" fill="${dark}"/></svg>`
 }
 
 function crc32(buffer) {

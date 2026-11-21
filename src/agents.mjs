@@ -3,7 +3,7 @@
 // computer is the source of truth; the phone reads it through `/agents`.
 import fs from 'node:fs'
 import path from 'node:path'
-import { bridgeDir, ensureDir, readJson, writeJson } from './util.mjs'
+import { bridgeDir, ensureDir, log, readJson, writeJson } from './util.mjs'
 
 export const BUILTINS = [
   { id: 'desktop', name: '电脑模型', host: 'desktop', kind: 'model', note: '电脑上正在和你对话的 DSH 模型' },
@@ -15,8 +15,29 @@ export function agentsPath() {
 }
 
 export function loadAgents() {
-  const data = readJson(agentsPath(), { agents: [] })
-  return Array.isArray(data?.agents) ? data.agents : []
+  const file = agentsPath()
+  let raw = ''
+  try {
+    raw = fs.readFileSync(file, 'utf8')
+  } catch (error) {
+    if (error?.code !== 'ENOENT') log(`读取 agents.json 失败：${error?.message || error}`)
+    return []
+  }
+  if (!raw.trim()) return []
+  try {
+    const data = JSON.parse(raw)
+    return Array.isArray(data?.agents) ? data.agents : []
+  } catch (error) {
+    // 坏文件不能静默当空：下一次 addAgent 会把历史成员整体覆盖掉。
+    const backup = `${file}.corrupt-${Date.now()}`
+    try {
+      fs.renameSync(file, backup)
+    } catch {
+      /* 备份失败也不该阻断 */
+    }
+    log(`agents.json 解析失败，已备份到 ${path.basename(backup)}：${error?.message || error}`)
+    return []
+  }
 }
 
 export function saveAgents(list) {
@@ -27,7 +48,8 @@ export function saveAgents(list) {
 
 export function alive(pid) {
   const n = Number(pid)
-  if (!n) return false
+  // pid 为 0/负数时 process.kill 会探测整个进程组（kill(-1,0) 甚至恒成功）。
+  if (!Number.isFinite(n) || n <= 0) return false
   try {
     process.kill(n, 0)
     return true

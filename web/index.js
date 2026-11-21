@@ -38,6 +38,23 @@ function readJson(file, fallback) {
   }
 }
 
+// 状态文件（游标）不能用「读失败就当空」的语义：文件损坏或瞬时不可读时若当成首次启动，
+// 游标会归零、重新对齐到最新，积压的消息就永久跳过了。这里把「文件不存在」和「读坏了」分开。
+function readJsonStrict(file) {
+  let raw
+  try {
+    raw = fs.readFileSync(file, 'utf8')
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { exists: false, value: null }
+    throw error
+  }
+  try {
+    return { exists: true, value: JSON.parse(raw) }
+  } catch (error) {
+    throw new Error(`${path.basename(file)} 损坏：${error.message}`)
+  }
+}
+
 function writeJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const temp = `${file}.${process.pid}.tmp`
@@ -691,8 +708,16 @@ function readWake(config = readConfig()) {
   return { ...WAKE_DEFAULTS, ...(config.wake || {}) }
 }
 
-function readWakeState() {
-  const state = readJson(wakeStatePath(), {})
+function readWakeState({ strict = false } = {}) {
+  let state = {}
+  try {
+    const { value } = readJsonStrict(wakeStatePath())
+    state = value && typeof value === 'object' && !Array.isArray(value) ? value : {}
+  } catch (error) {
+    // 损坏时：tick 用 strict 版本（本轮直接放弃、不动文件），展示用宽松版本。
+    if (strict) throw error
+    state = {}
+  }
   return {
     cursor: Number(state.cursor || 0),
     lastWake: state.lastWake || null,
@@ -701,6 +726,10 @@ function readWakeState() {
     // aligned 每次从 false 开始（每轮都要重新对齐游标）。
     giveUp: state.giveUp && typeof state.giveUp === 'object' ? state.giveUp : {},
     aligned: state.aligned === true,
+    // 已投递成功的 seq。漏掉这个字段，busy 组钉住游标时同批消息会每轮重投（功能等于没修）。
+    delivered: Array.isArray(state.delivered)
+      ? state.delivered.map((n) => Number(n)).filter((n) => n > 0)
+      : [],
   }
 }
 
@@ -831,7 +860,10 @@ function topLevel(rows) {
 // 「（手机已连上电脑）」这类是桥接自己写的系统通知，不是模型说的话。
 // 拿它去唤醒对端模型，就会得到「手机 1 条（9 字）」这种莫名其妙的消息。
 const NOTICE_RE = /^（[^）]{0,40}已连上[^）]{0,40}）$/
-export function isNotice(text) {
+export function isNotice(text, item) {
+  // 写入方显式打的标记优先：用户自己恰好发一句「（xx已连上xx）」时不能被当成系统通知吞掉。
+  if (item && item.notice === true) return true
+  if (item && item.notice === false) return false
   const plain = String(text == null ? '' : text).trim()
   return plain.length <= 60 && NOTICE_RE.test(plain)
 }
@@ -953,7 +985,14 @@ async function fulfilPendingSession() {
 async function wakeTick(agents) {
   const config = readConfig()
   const wake = readWake(config)
-  const state = readWakeState()
+  let state
+  try {
+    state = readWakeState({ strict: true })
+  } catch (error) {
+    // 状态文件坏了 / 被占用读不出来：本轮什么都不做。
+    // 绝不能当成「首次启动」——那会重新对齐到最新，积压消息全被跳过。
+    return
+  }
   // 手机端要求「电脑没有会话时自动开一个」：先把便签兑现，再正常跑唤醒。
   try {
     await fulfilPendingSession()
@@ -1039,7 +1078,7 @@ async function wakeTick(agents) {
       skipped.push(Number(item.seq) || 0)
       return false
     }
-    if (isNotice(item.text)) {
+    if (isNotice(item.text, item)) {
       // 系统通知不投递，但也得跨过去：留着会堵住 50 条的窗口。
       skipped.push(Number(item.seq) || 0)
       return false
@@ -1049,7 +1088,22 @@ async function wakeTick(agents) {
     return forDesktop
   })
   if (!incoming.length) {
-    if (skipped.length) state.cursor = Math.max(...skipped, Number(state.cursor) || 0)
+    if (skipped.length) {
+      // 和手机端一致：只推进到「从 cursor 起连续处理过」的那段，直接取 max 会越过
+      // 窗口里既没投也没跳过的 seq（= 永久丢消息）。
+      const handledSeq = new Set(skipped)
+      const allSeqs = (data?.messages || [])
+        .map((item) => Number(item?.seq) || 0)
+        .filter((n) => n > 0)
+        .sort((a, b) => a - b)
+      let cursorNow = Number(state.cursor) || 0
+      for (const seq of allSeqs) {
+        if (seq <= cursorNow) continue
+        if (!handledSeq.has(seq)) break
+        cursorNow = seq
+      }
+      state.cursor = cursorNow
+    }
     // 没有新消息也要把 lastError 收干净，别让一条旧报错一直挂着。
     if (state.lastError || skipped.length) {
       state.lastError = ''
@@ -1459,8 +1513,11 @@ async function reportPhoneSessions(agents, base, token) {
         },
         5000,
       )
-    } catch {
-      return // 电脑不在线就先不报，下一轮再说
+    } catch (error) {
+      // 单个会话报不上不代表电脑离线：继续报后面的，别让排在第一的坏会话
+      // 把其余会话永远挡在外面（面板下拉/peer_sessions 会一直缺会话）。
+      const message = String(error?.message || error)
+      if (/ECONNREFUSED|ENOTFOUND|fetch failed|aborted|timeout/i.test(message)) return
     }
   }
 }
@@ -1502,7 +1559,9 @@ async function ensureDesktopSession(agents, live, desktopId) {
     // 会话文件已经在了（上次建过、现在没打开）。**绝不能重建** —— 重建会让每一轮轮询
     // 都新开一个会话，同时把同一条消息反复重投（实测被投了 15 次以上）。
     // 直接沿用这个 id：投得进去就投，投不进去由上层记失败并最终放弃。
-    if (/already exists/i.test(message)) {
+    // 错误信息可能被引擎本地化（中文「已存在」），别只认英文 ——
+    // 认不出来就会 throw，上层记失败、3 次后放弃，下一轮又新建一个会话（越开越多）。
+    if (/already exists|already-exists|已存在|重复创建|duplicate/i.test(message)) {
       writeJson(peerLinksPath(), { ...readPeerLinks(), [desktopId]: id })
       return { id, created: false }
     }
@@ -1541,7 +1600,14 @@ async function inboxTick(agents, lastReport) {
       console.log(`[phone-bridge] 上报手机会话失败：${String(error?.message || error)}`)
     }
   }
-  const state = readJson(inboxStatePath(), { cursor: 0, lastError: '' })
+  let state
+  try {
+    const { value } = readJsonStrict(inboxStatePath())
+    state = value && typeof value === 'object' && !Array.isArray(value) ? value : { cursor: 0, lastError: '' }
+  } catch (error) {
+    // 和桌面侧一致：状态文件读坏了本轮直接放弃，别当「首次启动」把游标清零。
+    return lastReport
+  }
 
   // 和桌面侧一个规矩：第一次跑先把 cursor 对齐到最新，不把历史灌进会话。
   if (!state.aligned && !state.cursor) {
@@ -1583,7 +1649,15 @@ async function inboxTick(agents, lastReport) {
     collab = snapshot?.collab || null
     peerSessions = Array.isArray(snapshot?.desktopSessions) ? snapshot.desktopSessions : []
     peerLinks = snapshot?.links && typeof snapshot.links === 'object' ? snapshot.links : {}
-  } catch {}
+  } catch (error) {
+    // 拉不到配对表 → 本轮 pinned 为空，无 desktopId 的消息会被误判 blocked 卡住。
+    // 记进 lastError 让面板能看到（原来这里是空白 catch，失败了完全没痕迹）。
+    const message = `拉取配对表失败：${String(error?.message || error)}`
+    if (message !== state.lastError) {
+      state.lastError = message
+      writeJson(inboxStatePath(), state)
+    }
+  }
   // 开关的真源在电脑上，手机这边只是镜像一份给会话顶部的按钮看。
   // 电脑上的 links 表只做 UI 镜像，**绝不能**写进 peer-links.json —— 那个文件存的是
   // 「电脑会话 → 手机会话」的分身映射（字符串值），两种结构混写会让映射全部失效，
@@ -1600,10 +1674,15 @@ async function inboxTick(agents, lastReport) {
   // 电脑上点了某个会话的「互联」但还没说话时，先把对应的手机会话建出来，
   // 否则用户会觉得「点了没反应」，要等第一条消息才冒出新会话。
   if (peerLinks && Object.keys(peerLinks).length) {
+    // 每轮最多建 2 个：agents.create 可能要几百毫秒，一口气建 6 个会把这一轮 tick
+    // 拖过 3 秒，下一轮被 busy 直接跳过，反而更慢（剩余的下轮继续）。
+    let built = 0
     for (const [desktopId, entry] of Object.entries(peerLinks)) {
+      if (built >= 2) break
       // entry 是 links 表里的值：{at} 或 {phoneId, at}。只有已经有 phoneId 的才算已映射。
       // （早先写成 `if (entry) continue` —— 对象永远 truthy，结果一条都不预建。）
       if (!desktopId || entry?.phoneId) continue
+      built += 1
       try {
         const made = await ensureDesktopSession(agents, liveNow, desktopId)
         if (made && made.id && made.created) {
@@ -1647,7 +1726,7 @@ async function inboxTick(agents, lastReport) {
     }
     // 系统通知（「（手机已连上电脑）」）不唤醒模型，但游标必须跨过去，
     // 否则一窗全是通知时后面的真实消息会被饿死（和 wakeTick 保持一致）。
-    if (isNotice(item.text)) {
+    if (isNotice(item.text, item)) {
       skipped.push(Number(item.seq) || 0)
       return false
     }
@@ -1661,7 +1740,26 @@ async function inboxTick(agents, lastReport) {
   })
 
   if (!incoming.length && skipped.length) {
-    state.cursor = Math.max(...skipped, Number(state.cursor) || 0)
+    // 只推进到「从当前 cursor 起连续处理过」的那一段，不能直接取 max ——
+    // 窗口里若有既没投也没跳过的 seq，越过它就是永久丢消息。
+    const handledSeq = new Set(skipped)
+    const allSeqs = (data?.messages || [])
+      .map((item) => Number(item?.seq) || 0)
+      .filter((n) => n > 0)
+      .sort((a, b) => a - b)
+    let cursorNow = Number(state.cursor) || 0
+    for (const seq of allSeqs) {
+      if (seq <= cursorNow) continue
+      if (!handledSeq.has(seq)) break
+      cursorNow = seq
+    }
+    state.cursor = cursorNow
+    // 没有新消息要投：把「上轮找不到会话」这类旧错误清掉，面板不该一直挂着过期提示。
+    state.lastError = ''
+    writeJson(inboxStatePath(), state)
+  } else if (!incoming.length && state.lastError) {
+    // 连可跳过的都没有：同样清掉过期错误（和桌面侧 wakeTick 一致）。
+    state.lastError = ''
     writeJson(inboxStatePath(), state)
   }
 

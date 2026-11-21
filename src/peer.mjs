@@ -24,6 +24,9 @@ export function savePeerConfig(value) {
   writeJson(peerConfigPath(), value)
 }
 
+// 回环/任意地址都不是「对端」：连它等于连自己，写进 pairs 会让自动重连永远失败。
+const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '::1', '[::1]', '0.0.0.0', '::', '[::]']
+
 export function ensurePeerLink({ config, identity, isDial, endpoint, onOpen }) {
   let runtime = null
   let timer = null
@@ -32,10 +35,15 @@ export function ensurePeerLink({ config, identity, isDial, endpoint, onOpen }) {
   return {
     info() {
       const cfg = loadPeerConfig()
+      // 必须用真实本机地址比较：0.0.0.0 比任何真实 IP 都小，会让 primary 恒 false，
+      // 于是手机连过一次、pairs 里有记录之后，就再也不主动拨号
+      // （切 Wi-Fi / 电脑重启后必须手动重新配对，就是这么来的）。
       const myEndpoints = (cfg.pairs || []).filter((p) => p.host).map((p) => `${p.host}:${p.port}`)
-      const selfPort = config.asHost?.port
+      const selfHost = String(config.asHost?.host || '')
+      const selfPort = Number(config.asHost?.port || 0)
+      const mine = selfHost && selfPort ? `${selfHost}:${selfPort}` : ''
       const target = [...myEndpoints].sort()[0]
-      const primary = target ? compareEndpoint(`0.0.0.0:${selfPort || 0}`, target) > 0 : true
+      const primary = target && mine ? compareEndpoint(mine, target) > 0 : true
       return { pairs: cfg.pairs || [], primary, self: config.asHost || null }
     },
 
@@ -64,9 +72,14 @@ export function ensurePeerLink({ config, identity, isDial, endpoint, onOpen }) {
       scanning = true
       try {
         const cfg = loadPeerConfig()
+        // 运行中把 peer.json 改成 enabled:false 也要真的停下（以前只 start() 检查一次）。
+        if (cfg.enabled === false) {
+          this.stop()
+          return
+        }
         const pairs = (Array.isArray(cfg.pairs) ? cfg.pairs : []).filter(
           // 回环地址是测试留下的噪音：连它等于连自己，会让手机一直「重试」
-          (pair) => pair?.host && !['127.0.0.1', 'localhost', '::1', '[::1]'].includes(String(pair.host)),
+          (pair) => pair?.host && !LOOPBACK_HOSTS.includes(String(pair.host)),
         )
         let changed = false
         for (const pair of pairs) {
@@ -92,7 +105,7 @@ export function ensurePeerLink({ config, identity, isDial, endpoint, onOpen }) {
           const url = new URL(endpoint())
           const host = url.hostname
           // 回环不是「对端」：写进去会让手机永远连自己（旧版本的测试残留就是这样来的）
-          if (host && !['127.0.0.1', 'localhost', '::1', '[::1]'].includes(host)) {
+          if (host && !LOOPBACK_HOSTS.includes(host)) {
             cfg.pairs = [{ host, port: Number(url.port || 8787), name: '已配对的对象', lastSeen: new Date().toISOString() }]
             changed = true
           }

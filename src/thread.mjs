@@ -164,6 +164,9 @@ export function append(from, text, to = 'all', levelOrOptions = 'normal') {
       at: new Date().toISOString(),
     }
     if (options.silent) row.silent = true
+    // 桥接自己写的系统通知（「（手机已连上电脑）」）显式标记，接收端不必再靠文本正则猜，
+    // 用户恰好发同样一句话也不会被误吞。
+    if (options.notice) row.notice = true
     if (options.kind) row.kind = String(options.kind).slice(0, 40)
     // 发起方身份：桌面侧拿不到 MCP caller（DSH 不传），只能让发消息的模型
     // 自己报上「我是哪个会话」。对端靠它决定投进哪个对话 / 要不要新开一个。
@@ -189,8 +192,14 @@ export function read(since = 0, limit = 200, as = '') {
         return to === 'all' || to === viewer || to.startsWith(`${viewer}:`) || row.from === viewer
       })
     : all
-  const messages = visible.filter((row) => row.seq > Number(since || 0)).slice(0, Number(limit) || 200)
-  return { messages, next: messages.length ? messages[messages.length - 1].seq : Number(since || 0), total: visible.length }
+  // since/limit 来自磁盘上的状态文件，可能是 'abc' / null / 负数：
+  // 不校验的话 `row.seq > NaN` 恒 false → 一条都取不到、游标被重置成 0 → 全部旧消息重投。
+  const sinceNum = Number(since)
+  const start = Number.isFinite(sinceNum) ? sinceNum : 0
+  const limitNum = Number(limit)
+  const cap = Number.isFinite(limitNum) && limitNum > 0 ? limitNum : 200
+  const messages = visible.filter((row) => row.seq > start).slice(0, cap)
+  return { messages, next: messages.length ? messages[messages.length - 1].seq : start, total: visible.length }
 }
 
 // Waits until somebody (not this agent) writes something this agent can see,

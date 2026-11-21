@@ -17,6 +17,9 @@ function __buildPhoneBridge(require) {
     }
 
     var PACKAGE = '@undertale11121/dsh-phone-bridge'
+    // 轮询快照和用户操作会互相赛跑：早发出、晚返回的旧快照会把刚写入的新状态覆盖回去
+    // （开关闪回 1-5 秒）。用代次让只有最新一次 load 的响应生效。
+    var loadSeq = 0
     // The id of the sidebar row and of its `main` page. It must not collide
     // with the host's own panels (`plugins`, `dsh-market`, …).
     var PANEL_ID = 'phone-bridge'
@@ -209,17 +212,20 @@ function __buildPhoneBridge(require) {
         var setShowAll = showAllPair[1]
 
         var load = useCallback(function () {
+          var gen = ++loadSeq
           fetch('/phone-bridge/config', { headers: { accept: 'application/json' } })
             .then(function (res) {
               if (!res.ok) throw new Error('HTTP ' + res.status)
-              return res.json()
+              return res.json().catch(function () { return {} })
             })
             .then(function (data) {
+              if (gen !== loadSeq) return
               setState(data)
               setError('')
             })
             .catch(function (err) {
-              setError(t.failed + '：' + err.message)
+              if (gen !== loadSeq) return
+              setError(t.failed + '：' + ((err && err.message) || err))
             })
         }, [])
 
@@ -237,26 +243,37 @@ function __buildPhoneBridge(require) {
 
         function act(body) {
           setBusy(body.action + (body.key || ''))
-          fetch('/phone-bridge/config', {
+          // 必须自带超时：桥接卡死 / TCP 半开时 fetch 会一直挂着，busy 永远清不掉，
+          // 面板上所有按钮就永久禁用，只能刷新页面。
+          var ctrl = typeof AbortController === 'function' ? new AbortController() : null
+          var timer = ctrl ? setTimeout(function () { try { ctrl.abort() } catch (e) {} }, 12000) : null
+          var done = function () {
+            if (timer) clearTimeout(timer)
+            setBusy('')
+          }
+          return fetch('/phone-bridge/config', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(body),
+            signal: ctrl ? ctrl.signal : undefined,
           })
             .then(function (res) {
-              return res.json()
+              return res.json().catch(function () { return {} })
             })
             .then(function (data) {
-              if (data.state) setState(data.state)
-              if (data.error) setError(data.error)
+              if (data.state) {
+                ++loadSeq
+                setState(data.state)
+              }
+              if (data.error || data.ok === false) setError(String(data.error || data.text || '操作没成功'))
               else setError('')
               setNotice(data.text || '')
+              return data
             })
             .catch(function (err) {
-              setError(String(err.message || err))
+              setError(String((err && err.message) || err))
             })
-            .then(function () {
-              setBusy('')
-            })
+            .then(done, done)
         }
 
         function copy(text) {
@@ -820,14 +837,25 @@ function __buildPhoneBridge(require) {
         var tipPair = useState('')
         var tip = tipPair[0]
         var setTip = tipPair[1]
+        var linkErrorPair = useState('')
+        var linkError = linkErrorPair[0]
+        var setLinkError = linkErrorPair[1]
 
         function load() {
           fetch('/phone-bridge/config', { headers: { accept: 'application/json' } })
-            .then(function (res) { return res.ok ? res.json() : null })
-            .then(function (data) { if (data) setState(data) })
-            .catch(function () {})
+            .then(function (res) {
+              if (!res.ok) throw new Error('HTTP ' + res.status)
+              return res.json()
+            })
+            .then(function (data) { setState(data); setLinkError('') })
+            .catch(function (err) { setLinkError(String((err && err.message) || err)) })
         }
-        useEffect(function () { load() }, [sessionId])
+        useEffect(function () {
+          load()
+          // 另一端开/关互联后这边必须自己刷新，否则按钮永远显示旧状态。
+          var timer = setInterval(load, 5000)
+          return function () { clearInterval(timer) }
+        }, [sessionId])
 
         if (!sessionId) return null
         // 手机端的开关表是从电脑同步过来的（peerLinks），键仍是电脑会话 id。
@@ -850,20 +878,32 @@ function __buildPhoneBridge(require) {
         var on = !!linkedKey
 
         function toggle() {
-          if (busy) return
+          if (busy || !state) return
           setBusy(true)
           setTip('')
+          // 手机端必须反查「这个手机会话对应哪个电脑会话」再一起发过去，
+          // 否则电脑侧只能猜，会把不相干的会话连上（串会话）。
+          var mirror = (state && state.peerLinks) || {}
+          var desktopId = ''
+          Object.keys(mirror).forEach(function (id) {
+            var entry = mirror[id]
+            if (!desktopId && sameSession(entry && entry.phoneId, sessionId)) desktopId = id
+          })
           var body = onPhone
-            ? { action: 'linkRemote', phoneId: sessionId, off: on }
+            ? { action: 'linkRemote', phoneId: sessionId, desktopId: desktopId, off: on }
             : { action: 'link', desktopId: sessionId, off: on }
-          if (!onPhone && !on && state && state.collab && state.collab.phoneSessionId) {
-            body.phoneId = state.collab.phoneSessionId
-          }
+          var ctrl = typeof AbortController === 'function' ? new AbortController() : null
+          var timer = ctrl ? setTimeout(function () { try { ctrl.abort() } catch (e) {} }, 12000) : null
           return fetch('/phone-bridge/config', {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify(body),
-          }).then(function (res) { return res.json() })
+            signal: ctrl ? ctrl.signal : undefined,
+          }).then(function (res) {
+            if (timer) clearTimeout(timer)
+            if (!res.ok) throw new Error('HTTP ' + res.status)
+            return res.json().catch(function () { return {} })
+          })
             .then(function (data) {
               setBusy(false)
               if (!data || data.ok === false) {

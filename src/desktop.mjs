@@ -524,7 +524,7 @@ class DesktopBridge {
         // One line per connect event, so a sleeping desktop model reading the
         // workbench next turn knows the phone is back.
         try {
-          threadAppend('desktop', `（${this.device.name || '手机'}已连上，可以派活了）`, 'all')
+          threadAppend('desktop', `（${this.device.name || '手机'}已连上，可以派活了）`, 'all', { notice: true })
         } catch {}
       }
       const reqs = await this.nextRequests(wait)
@@ -616,9 +616,13 @@ class DesktopBridge {
         const links = readLinksFile()
         let key = desktopId || Object.keys(links).find((id) => String(links[id]?.phoneId || '') === phoneId) || ''
         if (!key && phoneId) {
-          // 手机端点了开关但还没配对过：接到电脑上最近开着的那个会话。
-          const liveNow = readJson(path.join(bridgeDir(), 'live.json'), {})
-          key = String((Array.isArray(liveNow?.sessions) ? liveNow.sessions[0]?.id : '') || '')
+          // 手机端点了开关但没带 desktopId：以前会接到「电脑上最近开着的那个会话」，
+          // 结果不同的手机会话全被连到同一个电脑会话（串会话）。
+          // 用户要求一一对应 —— 宁可报错让用户去电脑上点那个会话，也不猜。
+          return sendJson(res, 400, {
+            ok: false,
+            text: '手机端没指定要连哪个电脑会话，请在电脑上点那个会话顶部的「🔗 互联」',
+          })
         }
         if (!key) {
           // 用户 m04603：手机上点开互联、电脑上却一个会话都没开 —— 别报错，

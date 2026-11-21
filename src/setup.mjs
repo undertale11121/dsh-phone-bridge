@@ -2,6 +2,7 @@
 // both the desktop and the phone can show a graphical configuration screen
 // without depending on a web framework.
 import http from 'node:http'
+import os from 'node:os'
 import { log } from './util.mjs'
 
 // The page is rendered on the server: the browser needs no JavaScript at all,
@@ -91,26 +92,87 @@ const CORS = {
   'access-control-max-age': '600',
 }
 
+// 本机的非回环 IPv4 地址集合：用来判断跨源请求是不是「从本机另一个端口」来的。
+let localAddressCache = null
+function localAddresses() {
+  if (localAddressCache) return localAddressCache
+  const set = new Set()
+  try {
+    for (const list of Object.values(os.networkInterfaces())) {
+      for (const item of list || []) {
+        if (item && item.family === 'IPv4' && !item.internal) set.add(item.address)
+      }
+    }
+  } catch {
+    /* 取不到网卡就当没有 */
+  }
+  localAddressCache = set
+  return set
+}
+
+// POST body 读入带上限：任意本机页面都能往 127.0.0.1:8789 灌超大 body 把进程内存打爆。
+const MAX_BODY = 1 << 20
+async function readBody(req) {
+  const chunks = []
+  let size = 0
+  for await (const chunk of req) {
+    size += chunk.length
+    if (size > MAX_BODY) {
+      const error = new Error('请求体太大')
+      error.status = 413
+      throw error
+    }
+    chunks.push(chunk)
+  }
+  return Buffer.concat(chunks).toString('utf8')
+}
+
 export function startSetup({ role, port, host = '127.0.0.1', state, action }) {
   const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url, 'http://localhost')
+    // 一条 `GET //` 就会让 new URL 抛 ERR_INVALID_URL；放在 try 外等于任何本机进程
+    // 都能用一条请求把这个进程打挂（unhandled rejection → 进程退出）。
+    let url = null
+    // 配置页只给本机浏览器用：跨源请求必须是同 Host、或本机回环地址。
+    // 以前固定 `*`，任意网页都能跨源读 /api/state（里面含配对串）并 POST /api/action。
+    const origin = String(req.headers.origin || '')
+    let allowOrigin = !origin
+    if (origin) {
+      try {
+        const parsed = new URL(origin)
+        // 本机所有地址都算自己人：电脑上的 /pair 页面跑在另一个端口（如 8897），
+        // 它会跨源 POST 到这个配置页（8789），所以要按「主机是本机」放行、不限端口。
+        allowOrigin =
+          parsed.host === String(req.headers.host || '') ||
+          parsed.hostname === '127.0.0.1' ||
+          parsed.hostname === 'localhost' ||
+          parsed.hostname === '[::1]' ||
+          localAddresses().has(parsed.hostname)
+      } catch {
+        allowOrigin = false
+      }
+    }
+    // 仍然回 `*`：真正的守门是上面的 Origin 校验（坏来源在写响应前就 403 了）。
+    const cors = allowOrigin ? CORS : {}
     const send = (code, body, type = 'application/json; charset=utf-8') => {
-      res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', ...CORS })
+      res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store', ...cors })
       res.end(body)
     }
+    if (!allowOrigin) {
+      res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' })
+      return res.end(JSON.stringify({ ok: false, error: 'origin not allowed' }))
+    }
     if (req.method === 'OPTIONS') {
-      res.writeHead(204, CORS)
+      res.writeHead(204, cors)
       return res.end()
     }
     try {
+      url = new URL(req.url, 'http://localhost')
       if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
         const snapshot = { role, ...(await state()) }
         return send(200, pageHtml(snapshot, url.searchParams.get('msg') || ''), 'text/html; charset=utf-8')
       }
       if (req.method === 'POST' && url.pathname === '/act') {
-        const chunks = []
-        for await (const chunk of req) chunks.push(chunk)
-        const form = new URLSearchParams(Buffer.concat(chunks).toString('utf8'))
+        const form = new URLSearchParams(await readBody(req))
         const id = String(form.get('id') || '')
         const fields = {}
         for (const [key, value] of form) if (key !== 'id') fields[key] = value
@@ -128,16 +190,15 @@ export function startSetup({ role, port, host = '127.0.0.1', state, action }) {
         return send(200, JSON.stringify({ role, ...(await state()) }))
       }
       if (req.method === 'POST' && url.pathname === '/api/action') {
-        const chunks = []
-        for await (const chunk of req) chunks.push(chunk)
-        const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+        const body = JSON.parse((await readBody(req)) || '{}')
         const result = (await action(String(body.id || ''), body.fields || {})) || {}
         return send(200, JSON.stringify({ ok: true, text: result.text || '完成', state: { role, ...(await state()) } }))
       }
       return send(404, JSON.stringify({ ok: false, error: 'not found' }))
     } catch (error) {
       log(`配置页请求失败：${error?.message || error}`)
-      return send(500, JSON.stringify({ ok: false, error: error?.message || String(error) }))
+      const code = Number(error?.status) || 500
+      return send(code, JSON.stringify({ ok: false, error: error?.message || String(error) }))
     }
   })
   server.on('error', (error) => log(`配置页没启动：${error?.message || error}`))

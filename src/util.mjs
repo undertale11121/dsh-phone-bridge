@@ -53,7 +53,10 @@ export function ensureDir(p) {
 export function readJson(file, fallback) {
   try {
     return JSON.parse(fs.readFileSync(file, 'utf8'))
-  } catch {
+  } catch (error) {
+    // 只有「文件不存在」才算没有；权限/目录/内容损坏不能静默当空文件，
+    // 否则调用方会把真实配置覆盖成空的（agents.json 曾这样整份丢过）。
+    if (error?.code !== 'ENOENT') log(`读取 ${path.basename(file)} 失败：${error?.message || error}`)
     return fallback
   }
 }
@@ -61,7 +64,19 @@ export function readJson(file, fallback) {
 export function writeJson(file, value) {
   ensureDir(path.dirname(file))
   const tmp = `${file}.${process.pid}.tmp`
-  fs.writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`)
+  // 这些文件里有配对 token，权限必须是 0600（以前 0644，同机别的用户能读走）。
+  const fd = fs.openSync(tmp, 'w', 0o600)
+  try {
+    fs.writeFileSync(fd, `${JSON.stringify(value, null, 2)}\n`)
+    // 先落盘再 rename：只 rename 不 fsync，断电后可能留下空文件。
+    try {
+      fs.fsyncSync(fd)
+    } catch {
+      /* 某些文件系统不支持 fsync，忽略 */
+    }
+  } finally {
+    fs.closeSync(fd)
+  }
   fs.renameSync(tmp, file)
 }
 
