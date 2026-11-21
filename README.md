@@ -32,6 +32,21 @@ npx dsh-phone-bridge print-patch     # 打印要加进 profile 的 YAML
 
 之后两边的模型直接说话就行，不用在面板里选来选去。
 
+## 手机端怎么装
+
+手机上的「插件市场」和电脑端不是同一个数据源，所以直接装：
+
+1. 把仓库根目录整包传到手机的 `/root/workspace/phone-bridge`（`dsh-phone-bridge-<版本>.zip` 解压即可，顶层有 `package.json`）。
+2. 在手机的 DSH profile 里登记（`/root/.dsh/profiles/web/package.json`）：
+   ```json
+   "dependencies": { "@undertale11121/dsh-phone-bridge": "link:/root/workspace/phone-bridge" },
+   "dsh": { "profile": { "bundles": [ "...", "@undertale11121/dsh-phone-bridge" ] } }
+   ```
+   再让 `node_modules/@undertale11121/dsh-phone-bridge` 指向 `/root/workspace/phone-bridge`。
+3. 重启一次 DSH Go。
+
+从 0.6.16 起，`bridge.mjs auto` 启动时会自己检查这一步：profile 里缺了就补回去（依赖、bundle、软链），下次重启自动生效 —— **DSH Go 重装或升级之后不用再手动改**。
+
 ## 连手机
 
 1. 桌面端点开左栏的 **「互联」**（或者在「插件」→ dsh-phone-bridge 详情页上看同一张卡片）。
