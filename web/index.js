@@ -2444,6 +2444,9 @@ function installHostTools(ctx) {
 
 /** 幂等地把引擎行补进每个装了本 bundle 的 profile，返回改过的文件。 */
 export function installEngineRow() {
+  // 手机侧不跑 MCP 引擎：它自己是服务端，再补一行 MCP 会让手机多起一个桥接、
+  // 和自己抢 8787。整包装在手机上时这条守卫必须先于 profile 扫描生效。
+  if (isPhone()) return []
   if (process.env[AUTOPATCH_ENV] === '1') return []
   const engine = enginePath()
   if (!engine) return []
