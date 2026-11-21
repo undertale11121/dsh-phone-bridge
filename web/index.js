@@ -1824,11 +1824,38 @@ async function ensureDesktopSession(agents, live, desktopId, title = '') {
         return { id, created: false }
       }
       const fresh = `session-${crypto.randomUUID()}`
-      await agents.create({ sessionId: fresh, meta: { cwd }, agentOptions })
+      try {
+        await agents.create({ sessionId: fresh, meta: { cwd }, agentOptions })
+      } catch (again) {
+        const why = String(again?.message || again)
+        if (/agent factory|no agent|不支持自动新开/i.test(why)) {
+          const recent = live
+            .filter((row) => row && row.id)
+            .sort((a, b) => Number(b.at || 0) - Number(a.at || 0))[0]
+          if (recent) {
+            console.log(`[phone-bridge] 重建会话也失败（${why}），改投最近活跃的 ${shortSession(String(recent.id))}`)
+            return { id: String(recent.id), created: false, fallback: true }
+          }
+        }
+        throw again
+      }
       writeJson(peerLinksPath(), { ...readPeerLinks(), [desktopId]: fresh })
       writeSessionTitle(fresh, title)
       console.log(`[phone-bridge] 旧手机会话 ${String(id).replace(/^session-/, '').slice(0, 8)} 已失效，改投新会话 ${fresh.replace(/^session-/, '').slice(0, 8)}`)
       return { id: fresh, created: true }
+    }
+    // 手机版 DSH 没注册 agent factory（实测日志：no agent factory registered
+    // (load an agent-loop plugin)）时，agents.create 必然失败。这时退到最近有
+    // 动静的手机会话：一一对应做不到，但至少消息能落到用户眼前，而不是永远
+    // 悬在 blocked 里、用户以为「互联坏了」。
+    if (/agent factory|no agent|不支持自动新开/i.test(message)) {
+      const recent = live
+        .filter((row) => row && row.id)
+        .sort((a, b) => Number(b.at || 0) - Number(a.at || 0))[0]
+      if (recent) {
+        console.log(`[phone-bridge] 建不了新会话（${message}），改投最近活跃的 ${shortSession(String(recent.id))}`)
+        return { id: String(recent.id), created: false, fallback: true }
+      }
     }
     throw error
   }
