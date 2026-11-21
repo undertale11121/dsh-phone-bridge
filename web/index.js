@@ -1754,6 +1754,7 @@ const lastSourcePath = () => path.join(bridgeDir(), 'last-desktop.json')
 // peerLinks 单独存一个文件：phone.json 是手机 bridge 在维护的，它一写就把我们塞进去的
 // 字段覆盖掉（实测第一版就是这样丢的）。
 const peerLinksPath = () => path.join(bridgeDir(), 'peer-links.json')
+let lastTitleSyncAt = 0
 const readPeerLinks = () => {
   const raw = readJson(peerLinksPath(), null) || (readJson(phoneConfigPath(), {}) || {}).peerLinks || {}
   // 只认「能当会话 id 用」的值：早期版本把电脑的 links 表（值形如 {phoneId, at}）
@@ -1766,12 +1767,37 @@ const readPeerLinks = () => {
   return out
 }
 
+// 预建出来的手机会话不写标题的话，dsh-go 的列表里就是一条无标题的空条目 ——
+// 实测 App 根本不显示它，用户就以为「电脑新建的对话手机上没出现」。这里把电脑
+// 那边的标题抄到 projcache 的 row 里，App 列表就按名字显示出来了。
+function writeSessionTitle(sessionId, title) {
+  const name = String(title || '').trim()
+  if (!sessionId || !name) return false
+  try {
+    const file = path.join(dshHome(), 'storages', 'session_projcache', 'sessions', `${sessionId}.json`)
+    if (!fs.existsSync(file)) return false
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const rows = data && data.record ? data.record.rows : null
+    if (!rows || typeof rows !== 'object') return false
+    const prev = rows.title
+    if (prev && String(prev.val || '') === name) return false
+    rows.title = { ver: (prev && prev.ver) || 1, seq: ((prev && prev.seq) || 0) + 1, val: name }
+    fs.writeFileSync(file, JSON.stringify(data))
+    return true
+  } catch {
+    return false
+  }
+}
+
 // 手机侧按「来源电脑会话」分身：一个电脑会话对应一个手机会话。
 // 第一次收到某个电脑会话的消息就新建一个，映射记在 peer-links.json（手机本地）。
-async function ensureDesktopSession(agents, live, desktopId) {
+async function ensureDesktopSession(agents, live, desktopId, title = '') {
   const links = readPeerLinks() || {}
   const known = links[desktopId]
-  if (known && live.some((row) => row.id === known)) return { id: known, created: false }
+  if (known && live.some((row) => row.id === known)) {
+    writeSessionTitle(known, title)
+    return { id: known, created: false }
+  }
   if (typeof agents?.create !== 'function') throw new Error('这台引擎不支持自动新开会话（agents.create 不可用）')
   // 映射里记着但会话已经不在了（应用重启过）——复用同一个 id 重新建，别让对话越开越多
   const id = known && /^session-/.test(known) ? known : `session-${crypto.randomUUID()}`
@@ -1794,18 +1820,21 @@ async function ensureDesktopSession(agents, live, desktopId) {
       // 3 轮后进 skipped → 这个电脑会话之后每条消息都丢（映射不变，永远重走这条路）。
       if (typeof agents.get === 'function' && agents.get(id)) {
         writeJson(peerLinksPath(), { ...readPeerLinks(), [desktopId]: id })
+        writeSessionTitle(id, title)
         return { id, created: false }
       }
       const fresh = `session-${crypto.randomUUID()}`
       await agents.create({ sessionId: fresh, meta: { cwd }, agentOptions })
       writeJson(peerLinksPath(), { ...readPeerLinks(), [desktopId]: fresh })
+      writeSessionTitle(fresh, title)
       console.log(`[phone-bridge] 旧手机会话 ${String(id).replace(/^session-/, '').slice(0, 8)} 已失效，改投新会话 ${fresh.replace(/^session-/, '').slice(0, 8)}`)
       return { id: fresh, created: true }
     }
     throw error
   }
   writeJson(peerLinksPath(), { ...readPeerLinks(), [desktopId]: created })
-  console.log(`[phone-bridge] 电脑会话 ${String(desktopId).replace(/^session-/, '').slice(0, 8)} → 手机会话 ${created.replace(/^session-/, '').slice(0, 8)}`)
+  writeSessionTitle(created, title)
+  console.log(`[phone-bridge] 电脑会话 ${String(desktopId).replace(/^session-/, '').slice(0, 8)} → 手机会话 ${created.replace(/^session-/, '').slice(0, 8)}${title ? ` 「${title}」` : ''}`)
   return { id: created, created: true }
 }
 
@@ -1932,7 +1961,7 @@ async function inboxTick(agents, lastReport) {
       if (!desktopId || entry?.phoneId) continue
       built += 1
       try {
-        const made = await ensureDesktopSession(agents, liveNow, desktopId)
+        const made = await ensureDesktopSession(agents, liveNow, desktopId, titleOf(desktopId))
         if (made && made.id && made.created) {
           const line = `${new Date().toISOString()} 预建手机会话：${desktopId.replace(/^session-/, '').slice(0, 8)} → ${String(made.id).replace(/^session-/, '').slice(0, 8)}\n`
           console.log(`[phone-bridge] ${line.trim()}`)
@@ -1944,11 +1973,29 @@ async function inboxTick(agents, lastReport) {
       }
     }
   }
+  // 已经建好、但标题还是空的手机会话：补上。历史遗留的预建会话在 App 列表里
+  // 是一条看不见的空白条目，用户以为「电脑新建的对话手机上没有」。
+  // 一分钟扫一次就够（每条要读一个 projcache 文件，每 3 秒扫一遍太重）。
+  if (Date.now() - lastTitleSyncAt > 60_000) {
+    lastTitleSyncAt = Date.now()
+    try {
+      const mine = readPeerLinks() || {}
+      for (const [desktopId, phoneId] of Object.entries(mine)) {
+        if (!/^session-/.test(String(phoneId))) continue
+        writeSessionTitle(phoneId, titleOf(desktopId))
+      }
+    } catch {}
+  }
   // 电脑上开着的会话也记进本机目录，手机模型才有得点名
   if (peerSessions.length) {
     try {
       syncPeerSessions(peerSessions)
     } catch {}
+  }
+  // 预建 / 首次投递时把电脑会话的标题带过去，手机会话才不会是一条无标题的空白条目
+  const titleOf = (desktopId) => {
+    const hit = peerSessions.find((row) => row && String(row.id) === String(desktopId))
+    return String((hit && hit.title) || '')
   }
   // 同上：只认用户显式选的配对，不再取「最近点过开关的那个」。
   const pinned = String(collab?.phoneSessionId || '')
@@ -2053,7 +2100,7 @@ async function inboxTick(agents, lastReport) {
       let target = null
       if (src) {
         try {
-          target = await ensureDesktopSession(agents, live, src)
+          target = await ensureDesktopSession(agents, live, src, titleOf(src))
         } catch (error) {
           fails.push(`给电脑会话 ${src.replace(/^session-/, '').slice(0, 8)} 开分身失败：${error?.message || error}`)
           for (const item of rows) failedSeqs.push(Number(item.seq) || 0)
