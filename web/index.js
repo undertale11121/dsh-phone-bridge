@@ -245,6 +245,8 @@ function readAgents() {
       id: String(item.id || ''),
       name: item.name || 'agent',
       host: item.host === 'phone' ? 'phone' : 'desktop',
+      // 面板要按时间倒序显示「最近的」会话，丢了 at 就只能显示文件里的老条目。
+      at: String(item.at || ''),
       kind: item.kind === 'subagent' ? 'subagent' : 'model',
       // The file records a pid, not liveness, for subagents it started.
       running: typeof item.running === 'boolean' ? item.running : pidAlive(item.pid),

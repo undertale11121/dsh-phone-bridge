@@ -524,11 +524,13 @@ function __buildPhoneBridge(require) {
               : h('div', { style: Object.assign({}, muted, { padding: '4px 0' }) }, t.sessionsNone),
           ))
 
-          var agents = state.agents || []
+          var agents = (state.agents || []).slice().sort(function (a, b) {
+            return String(b.at || '').localeCompare(String(a.at || ''))
+          })
           children.push(h('div', { key: 'agents', style: { marginTop: 12 } },
             h('div', { style: muted }, t.agents),
             agents.length
-              ? agents.slice(0, 8).map(function (item, index) {
+              ? agents.slice(0, 12).map(function (item, index) {
                   return h('div', { key: 'agent-' + (item.id || index), style: row },
                     h('span', null, item.name),
                     h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 6 } },
@@ -564,6 +566,8 @@ function __buildPhoneBridge(require) {
           // 别按 kind 筛——readAgents 会把 kind 归成 subagent/model，'session' 不会出现。
           var phoneRows = (state.agents || []).filter(function (item) {
             return item && item.host === 'phone' && String(item.id || '').indexOf('psess:') === 0
+          }).sort(function (a, b) {
+            return String(b.at || '').localeCompare(String(a.at || ''))
           })
           var links = state.links || {}
           var linkTarget = String(
