@@ -80,9 +80,24 @@ function ensurePhoneProfileRegistered() {
   if (!linked) {
     try {
       fs.mkdirSync(path.dirname(linkPath), { recursive: true })
+      let stale = null
       try {
-        fs.unlinkSync(linkPath)
-      } catch {}
+        stale = fs.lstatSync(linkPath)
+      } catch {
+        stale = null
+      }
+      if (stale) {
+        if (stale.isSymbolicLink()) {
+          fs.unlinkSync(linkPath)
+        } else if (stale.isDirectory()) {
+          // 真目录（用户手工拷进去的旧版本）绝不能递归删：那是用户的数据。
+          // 只能提示，让人自己决定移走还是保留。
+          log(`自愈：${linkPath} 是一个真实目录，不是软链，跳过（请手动移走后重启）`)
+          return changed
+        } else {
+          fs.unlinkSync(linkPath)
+        }
+      }
       fs.symlinkSync(root, linkPath, 'dir')
       changed = true
     } catch (error) {
@@ -91,7 +106,11 @@ function ensurePhoneProfileRegistered() {
   }
   if (!changed) return false
   try {
-    fs.writeFileSync(profileFile, `${JSON.stringify(profile, null, 2)}\n`)
+    // 原子写：写一半被 App 杀掉会让 package.json 变成非法 JSON，
+    // 之后自愈的 JSON.parse 永远失败 —— 插件再也起不来。
+    const tmp = `${profileFile}.tmp-${process.pid}`
+    fs.writeFileSync(tmp, `${JSON.stringify(profile, null, 2)}\n`)
+    fs.renameSync(tmp, profileFile)
     return true
   } catch (error) {
     log(`自愈：写 profile 失败 ${error?.message || error}`)

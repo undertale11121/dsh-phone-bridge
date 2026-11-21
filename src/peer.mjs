@@ -27,13 +27,14 @@ export function savePeerConfig(value) {
 // 回环/任意地址都不是「对端」：连它等于连自己，写进 pairs 会让自动重连永远失败。
 const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '::1', '[::1]', '0.0.0.0', '::', '[::]']
 
-export function ensurePeerLink({ config, identity, isDial, endpoint, onOpen }) {
+export function ensurePeerLink({ getConfig, identity, isDial, endpoint, onOpen, onAutoUrl }) {
   let runtime = null
   let timer = null
   let scanning = false
 
   return {
     info() {
+      const config = getConfig() || {}
       const cfg = loadPeerConfig()
       // 必须用真实本机地址比较：0.0.0.0 比任何真实 IP 都小，会让 primary 恒 false，
       // 于是手机连过一次、pairs 里有记录之后，就再也不主动拨号
@@ -64,13 +65,15 @@ export function ensurePeerLink({ config, identity, isDial, endpoint, onOpen }) {
     },
 
     reconfigure() {
-      /* next tick re-reads peer.json */
+      // 立即重读配置并重扫一遍：换 Wi-Fi / 用户改了地址后不用等下一个 30 秒。
+      this.tick().catch((error) => log(`重新配置后检查失败：${error?.message || error}`))
     },
 
     async tick() {
       if (scanning) return
       scanning = true
       try {
+        const config = getConfig() || {}
         const cfg = loadPeerConfig()
         // 运行中把 peer.json 改成 enabled:false 也要真的停下（以前只 start() 检查一次）。
         if (cfg.enabled === false) {
@@ -90,7 +93,14 @@ export function ensurePeerLink({ config, identity, isDial, endpoint, onOpen }) {
             pair.lastSeen = new Date().toISOString()
             changed = true
             if (!config.url && !config.autoUrl && !config.asHost) {
-              config.autoUrl = `http://${pair.host}:${pair.port}`
+              const auto = `http://${pair.host}:${pair.port}`
+              config.autoUrl = auto
+              // 只改内存不落盘的话，App 重启后又变回「配对过但永不拨号」。
+              try {
+                onAutoUrl?.(auto)
+              } catch (error) {
+                log(`自动连接地址落盘失败：${error?.message || error}`)
+              }
               log(`自动连接对端：${beacon.name || pair.host}（${pair.host}:${pair.port}）`)
             }
           }

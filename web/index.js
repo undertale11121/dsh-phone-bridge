@@ -55,6 +55,22 @@ function readJsonStrict(file) {
   }
 }
 
+const LOG_CAP_BYTES = 1024 * 1024
+/** append 一行日志，文件超过 1MB 时只保留最后一半，避免手机上无限增长。 */
+function appendCappedLog(name, line) {
+  const file = path.join(bridgeDir(), name)
+  try {
+    const stat = fs.statSync(file)
+    if (stat.size > LOG_CAP_BYTES) {
+      const kept = fs.readFileSync(file, 'utf8').slice(-Math.floor(LOG_CAP_BYTES / 2))
+      fs.writeFileSync(file, kept)
+    }
+  } catch {
+    /* 文件不存在就正常 append */
+  }
+  fs.appendFileSync(file, line)
+}
+
 function writeJson(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true })
   const temp = `${file}.${process.pid}.tmp`
@@ -1232,6 +1248,9 @@ async function wakeTick(agents) {
     }
   }
   for (const seq of sentSeqs) delete giveUp[seq]
+  // 只保留最近 500 条窗口内的计数，否则这两个对象随 seq 无限增长。
+  const keepFrom = Math.max(0, (Number(state.cursor) || 0) - 500)
+  for (const key of Object.keys(giveUp)) if (Number(key) < keepFrom) delete giveUp[key]
   state.giveUp = giveUp
   // blocked（点名目标没开着 / 对方正忙）不能无限等：满 100 轮（约 5 分钟）就跳过并说明。
   // 之前 blockedSeqs 只声明、只 push，从未被读取 —— 点名会话一关，游标就永久钉死在
@@ -1249,6 +1268,8 @@ async function wakeTick(agents) {
     }
   }
   for (const seq of [...sentSeqs, ...skipped]) delete blocked[seq]
+  const blockedKeep = Math.max(0, (Number(state.cursor) || 0) - 500)
+  for (const key of Object.keys(blocked)) if (Number(key) < blockedKeep) delete blocked[key]
   state.blocked = blocked
   // 只推进到「从当前 cursor 起连续处理过」的那一段，理由同 inboxTick：
   // 取 min(failedSeqs) 当边界会把失败组之后已成功的消息留在游标外，下一轮重投一遍。
@@ -1744,11 +1765,11 @@ async function inboxTick(agents, lastReport) {
         if (made && made.id && made.created) {
           const line = `${new Date().toISOString()} 预建手机会话：${desktopId.replace(/^session-/, '').slice(0, 8)} → ${String(made.id).replace(/^session-/, '').slice(0, 8)}\n`
           console.log(`[phone-bridge] ${line.trim()}`)
-          try { fs.appendFileSync(path.join(bridgeDir(), 'inbox-boot.log'), line) } catch {}
+          try { appendCappedLog('inbox-boot.log', line) } catch {}
         }
       } catch (error) {
         console.log(`[phone-bridge] 预建会话失败：${String(error?.message || error)}`)
-        try { fs.appendFileSync(path.join(bridgeDir(), 'inbox-boot.log'), `${new Date().toISOString()} 预建失败 ${desktopId}：${String(error?.message || error)}\n`) } catch {}
+        try { appendCappedLog('inbox-boot.log', `${new Date().toISOString()} 预建失败 ${desktopId}：${String(error?.message || error)}\n`) } catch {}
       }
     }
   }
@@ -1945,7 +1966,7 @@ async function inboxTick(agents, lastReport) {
     // 投递循环的诊断：游标不动时靠这一行判断是哪一类消息把它钉住了。
     try {
       const seqList = (value) => (value.length > 6 ? `${value.slice(0, 6).join(',')}…(${value.length})` : value.join(','))
-      fs.appendFileSync(path.join(bridgeDir(), 'inbox-boot.log'),
+      appendCappedLog('inbox-boot.log',
         `${new Date().toISOString()} 本轮 msg=${seqs.length} in=${incoming.length} sent=${seqList(sent)} skip=${seqList(skipped)} fail=${seqList(failedSeqs)} block=${seqList(blockedSeqs)} cursor=${Number(state.cursor) || 0}\n`)
     } catch {}
   }
@@ -2693,10 +2714,12 @@ async function ensureBridgeRunning() {
 
 // 宿主半注册工具的意义是「拿得到准确的当前会话」，所以只在桌面侧做；手机上
 // 工具面由 MCP 半提供，再注册一遍只会让模型看到两套同名工具。
+let hostToolsRegistering = false
 function installHostTools(ctx) {
   if (isPhone()) return
-  if (hostToolsStarted) return
-  hostToolsStarted = true
+  if (hostToolsStarted || hostToolsRegistering) return
+  // 不在调用前置 hostToolsStarted：注册失败（tools 服务还没就绪）就再也不会重试。
+  hostToolsRegistering = true
   // 注册这一步是黑盒：宿主没有可读日志，出问题时只能看有没有工具出现。
   // 落一份文件日志，重启后能直接判断卡在哪一环。
   const note = (line) => {
@@ -2716,8 +2739,14 @@ function installHostTools(ctx) {
     Promise.resolve()
       .then(() => ensureBridgeRunning())
       .then(() => registerHostTools(service))
-      .then((count) => note(`注册成功：${count} 个`))
+      .then((count) => {
+        hostToolsStarted = true
+        note(`注册成功：${count} 个`)
+      })
       .catch((error) => note(`注册失败：${error?.stack || error?.message || error}`))
+      .finally(() => {
+        hostToolsRegistering = false
+      })
   }
   let direct = null
   try {
@@ -2793,12 +2822,27 @@ export function apply(ctx) {
   // webServer exists only under the web profile, and cordis has no optional
   // inject form, so the route rides a scoped inject of its own.
   if (typeof ctx.inject !== 'function') return
+  // 这个路由挂在 DSH 的 webServer 上，本机浏览器里的任何网页都能 POST 它。
+  // 不校验来源的话，一个恶意页面就能 no-cors 发表单把 allowShell 打开。
+  const localOnly = (req) => {
+    const addr = String(req.socket?.remoteAddress || '')
+    const host = String(req.headers.host || '')
+      .replace(/:\d+$/, '')
+      .replace(/^\[|\]$/g, '')
+    const localHosts = ['127.0.0.1', 'localhost', '::1', '[::1]', '']
+    const loopbackAddr = addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1'
+    return loopbackAddr && localHosts.includes(host)
+  }
   const route = {
     name: 'phone-bridge-config',
     kind: 'exact',
     path: '/phone-bridge/config',
     handler: async (req, res) => {
       try {
+        if (!localOnly(req)) {
+          send(res, 403, { ok: false, error: '只允许本机访问' })
+          return
+        }
         if (req.method === 'GET' || req.method === 'HEAD') {
           send(res, 200, await snapshot())
           return
@@ -2807,7 +2851,17 @@ export function apply(ctx) {
           send(res, 405, { error: '只支持 GET / POST' })
           return
         }
+        const contentType = String(req.headers['content-type'] || '')
+        if (!/application\/json/i.test(contentType)) {
+          // no-cors 的跨源表单只能发 text/plain / form-data，挡掉这一类。
+          send(res, 415, { ok: false, error: 'POST 需要 application/json' })
+          return
+        }
         const body = await readJsonBody(req)
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          send(res, 400, { ok: false, error: '请求体必须是对象' })
+          return
+        }
         const result = await runAction(body)
         send(res, 200, { ok: true, text: result.text, state: await snapshot() })
       } catch (error) {

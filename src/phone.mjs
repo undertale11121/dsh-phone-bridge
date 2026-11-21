@@ -293,11 +293,21 @@ export class PhoneBridge {
     this.running = true
     this.loop().catch((error) => log(`连接循环退出：${explainError(error)}`))
     this.peer = ensurePeerLink({
-      config: this.config,
+      // 用 getConfig 而不是把对象传进去：this.config 会被整体替换（pair/connectTo/unpair），
+      // 传引用的话 peer 永远看的是旧对象，「配对好了但永不拨号」就是这么来的。
+      getConfig: () => this.config,
       identity: this.identity,
       isDial: () => this.mode === 'dial',
       endpoint: () => this.endpoint,
       onOpen: () => log('对端接入了本机（由对方发起轮询）'),
+      onAutoUrl: (url) => {
+        this.config = { ...this.config, autoUrl: url }
+        try {
+          savePhoneConfig(this.config)
+        } catch {
+          /* 落盘失败不影响本次连接 */
+        }
+      },
     })
     this.peer.start()
   }
@@ -1273,7 +1283,20 @@ export class PhoneBridge {
     let hello = null
     let helloError = null
     try {
-      hello = await this.postAt(url, '/hello', { v: 2, token: this.config.token || '', device, caps: this.caps() })
+      // 旧 token 只对旧地址有效：发给新地址等于泄露，而且新电脑会拿它当错配对处理。
+      const sameHost = (() => {
+        try {
+          return new URL(this.endpoint || '').host === new URL(url).host
+        } catch {
+          return false
+        }
+      })()
+      hello = await this.postAt(url, '/hello', {
+        v: 2,
+        token: sameHost ? this.config.token || '' : '',
+        device,
+        caps: this.caps(),
+      })
     } catch (error) {
       helloError = error
       if (error.status !== 401) throw error

@@ -68,6 +68,7 @@ function __buildPhoneBridge(require) {
         sessionsNone: '还没派过活（第一次 phone_ask 会创建 default）',
         agents: '能对话的 agent',
         agentsNone: '只有电脑模型和手机模型',
+        agentsMore: '还有 {n} 个更早的会话（只显示最近 12 个）',
         running: '运行中',
         stopped: '已停止',
         none: '还没有手机登记过',
@@ -147,6 +148,7 @@ function __buildPhoneBridge(require) {
         sessionsNone: 'Nothing dispatched yet (the first phone_ask creates default)',
         agents: 'Agents you can talk to',
         agentsNone: 'Only the desktop and phone models',
+        agentsMore: '{n} older sessions not shown (newest 12 only)',
         running: 'running',
         stopped: 'stopped',
         none: 'No phone registered yet',
@@ -297,10 +299,30 @@ function __buildPhoneBridge(require) {
               setCopied('')
             }, 1500)
           }
-          if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(text).then(done, done)
-          } else {
+          // 非 HTTPS / 无权限时 navigator.clipboard 不存在或会 reject；以前直接 done()，
+          // 界面上显示「已复制」但其实什么都没复制。现在退回 execCommand。
+          var fallback = function () {
+            try {
+              var area = document.createElement('textarea')
+              area.value = text
+              area.style.position = 'fixed'
+              area.style.top = '-1000px'
+              area.style.opacity = '0'
+              document.body.appendChild(area)
+              area.focus()
+              area.select()
+              var ok = document.execCommand && document.execCommand('copy')
+              document.body.removeChild(area)
+              if (!ok) return
+            } catch (error) {
+              /* 宿主禁用了两者，只能提示失败 */
+            }
             done()
+          }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done, fallback)
+          } else {
+            fallback()
           }
         }
 
@@ -446,10 +468,15 @@ function __buildPhoneBridge(require) {
             children.push(h('div', { key: 'pair', style: { marginTop: 10 } },
               h('div', { key: 'scan', style: { display: 'flex', gap: 14, alignItems: 'center', marginTop: 6, marginBottom: 10, flexWrap: 'wrap' } },
                 h('img', {
+                  key: 'qr',
                   src: '/phone-bridge/qr.svg',
                   width: 132,
                   height: 132,
                   alt: t.scanAlt,
+                  onError: function (event) {
+                    // 路由没注册 / 鉴权拦截时是一张破图，用户以为插件坏了。
+                    if (event && event.target) event.target.style.display = 'none'
+                  },
                   style: { borderRadius: 10, background: '#fff', padding: 6, flex: '0 0 auto' },
                 }),
                 h('div', { key: 'scanText', style: { minWidth: 160, flex: 1 } },
@@ -576,6 +603,9 @@ function __buildPhoneBridge(require) {
                   )
                 })
               : h('div', { style: Object.assign({}, muted, { padding: '4px 0' }) }, t.agentsNone),
+            agents.length > 12
+              ? h('div', { key: 'agents-more', style: Object.assign({}, muted, { paddingTop: 4 }) }, t.agentsMore.replace('{n}', String(agents.length - 12)))
+              : null,
           ))
 
           if (state.log && state.log.length) {
@@ -750,7 +780,7 @@ function __buildPhoneBridge(require) {
                 }),
               )
             })(),
-            state.workbenchUrl
+            /^https?:\/\//i.test(String(state.workbenchUrl || ''))
               ? h('a', { key: 'chat-open', href: state.workbenchUrl, target: '_blank', rel: 'noreferrer', style: { display: 'inline-block', marginTop: 6, fontSize: 13, color: 'var(--dsw-alias-brand-primary, #4c8dff)' } }, t.chatOpen)
               : null,
           ))
@@ -958,6 +988,10 @@ function __buildPhoneBridge(require) {
 
     function apply(ctx) {
       if (typeof ctx.inject !== 'function') return
+      // 重复 apply（热重载、profile 里同时写了两个包名）会注册两遍插槽，
+      // 卡片/面板在界面上出现两次。
+      if (globalThis.__phoneBridgeClientApplied) return
+      globalThis.__phoneBridgeClientApplied = true
       var pack = { locale: '' }
       ctx.inject(['locale'], function (scope) {
         if (scope.locale && typeof scope.locale.get === 'function') {

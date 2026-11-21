@@ -49,14 +49,22 @@ const qrRoute = registered[1]
 function response() {
   return { status: 0, body: '', writeHead(status) { this.status = status }, end(body) { this.body = body } }
 }
+// 配置路由只放行本机来源：mock 的 req 也要带上回环地址和 json content-type，
+// 否则测的是 403 而不是 payload。
+const LOCAL = { socket: { remoteAddress: '127.0.0.1' }, headers: { host: '127.0.0.1:8793' } }
 async function get() {
   const res = response()
-  await route.handler({ method: 'GET', headers: {} }, res)
+  await route.handler({ method: 'GET', headers: LOCAL.headers, socket: LOCAL.socket }, res)
   return { res, data: JSON.parse(res.body) }
 }
 async function post(body) {
   const res = response()
-  const req = { method: 'POST', headers: {}, async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(body)) } }
+  const req = {
+    method: 'POST',
+    headers: { ...LOCAL.headers, 'content-type': 'application/json' },
+    socket: LOCAL.socket,
+    async *[Symbol.asyncIterator]() { yield Buffer.from(JSON.stringify(body)) },
+  }
   await route.handler(req, res)
   return { res, data: JSON.parse(res.body) }
 }
