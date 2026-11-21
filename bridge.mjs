@@ -35,6 +35,70 @@ const USAGE = `用法：
   dsh-phone-bridge print-pair                        打印配对串（用当前配置的 token）
 `
 
+// 手机端自愈：DSH Go 重装/升级会把 profile 重置成空壳（没有我们的依赖和 bundle），
+// 但 MCP 行是独立加载的，所以 bridge 仍能起来 —— 就在这里把注册补回去，用户只需再重启一次。
+function ensurePhoneProfileRegistered() {
+  const profileDir = path.join(dshHome(), 'profiles', 'web')
+  const profileFile = path.join(profileDir, 'package.json')
+  const root = path.dirname(fileURLToPath(import.meta.url))
+  let self = null
+  try {
+    self = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
+  } catch {
+    return false
+  }
+  const name = self?.name
+  if (!name) return false
+  let profile = null
+  try {
+    profile = JSON.parse(fs.readFileSync(profileFile, 'utf8'))
+  } catch {
+    return false
+  }
+  const wanted = `link:${root}`
+  let changed = false
+  if (!profile.dependencies || typeof profile.dependencies !== 'object') profile.dependencies = {}
+  if (profile.dependencies[name] !== wanted) {
+    profile.dependencies[name] = wanted
+    changed = true
+  }
+  const bundles = Array.isArray(profile?.dsh?.profile?.bundles) ? profile.dsh.profile.bundles : []
+  if (!bundles.includes(name)) {
+    bundles.push(name)
+    profile.dsh = profile.dsh && typeof profile.dsh === 'object' ? profile.dsh : {}
+    profile.dsh.profile = profile.dsh.profile && typeof profile.dsh.profile === 'object' ? profile.dsh.profile : {}
+    profile.dsh.profile.bundles = bundles
+    changed = true
+  }
+  const linkPath = path.join(profileDir, 'node_modules', name)
+  let linked = false
+  try {
+    linked = fs.lstatSync(linkPath).isSymbolicLink() && fs.realpathSync(linkPath) === fs.realpathSync(root)
+  } catch {
+    linked = false
+  }
+  if (!linked) {
+    try {
+      fs.mkdirSync(path.dirname(linkPath), { recursive: true })
+      try {
+        fs.unlinkSync(linkPath)
+      } catch {}
+      fs.symlinkSync(root, linkPath, 'dir')
+      changed = true
+    } catch (error) {
+      log(`自愈：建软链失败 ${error?.message || error}`)
+    }
+  }
+  if (!changed) return false
+  try {
+    fs.writeFileSync(profileFile, `${JSON.stringify(profile, null, 2)}\n`)
+    return true
+  } catch (error) {
+    log(`自愈：写 profile 失败 ${error?.message || error}`)
+    return false
+  }
+}
+
 function takeFlag(name) {
   const index = rest.indexOf(name)
   if (index < 0) return null
@@ -54,6 +118,11 @@ async function main() {
       const role = detectRole()
       log(`自动识别为${role === 'phone' ? '手机端' : '桌面端'}`)
       if (role === 'phone') {
+        try {
+          if (ensurePhoneProfileRegistered()) log('检测到手机 profile 缺了本插件，已补回（重启 DSH 后生效）')
+        } catch (error) {
+          log(`profile 自检失败：${error?.message || error}`)
+        }
         await runPhoneMcp({ withMcp: true })
         await new Promise(() => {})
       } else {

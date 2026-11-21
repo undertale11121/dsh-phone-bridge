@@ -1522,7 +1522,9 @@ async function inboxTick(agents, lastReport) {
   // 否则用户会觉得「点了没反应」，要等第一条消息才冒出新会话。
   if (peerLinks && Object.keys(peerLinks).length) {
     for (const [desktopId, entry] of Object.entries(peerLinks)) {
-      if (!desktopId || entry) continue
+      // entry 是 links 表里的值：{at} 或 {phoneId, at}。只有已经有 phoneId 的才算已映射。
+      // （早先写成 `if (entry) continue` —— 对象永远 truthy，结果一条都不预建。）
+      if (!desktopId || entry?.phoneId) continue
       try {
         const made = await ensureDesktopSession(agents, liveNow, desktopId)
         if (made && made.id && made.created) {
@@ -2498,11 +2500,7 @@ async function readJsonBody(req) {
 export function apply(ctx) {
   // 探针：宿主里加载的到底是哪一份、跑到哪一步。绝对路径写死，绕开 dshHome 的不确定性。
   const trace = (line) => {
-    try {
-      fs.appendFileSync('C:/Users/17735/.dsh/phone-bridge/apply-probe.log', `${new Date().toISOString()} ${line}\n`)
-    } catch {
-      /* 探针失败无所谓 */
-    }
+    void line // 发布版不再写探针文件
   }
   trace(`apply 进入 pid=${process.pid} cwd=${process.cwd()} dshHome=${process.env.DSH_HOME || ''} homedir=${os.homedir()} inject=${typeof ctx?.inject}`)
   // webServer exists only under the web profile, and cordis has no optional
