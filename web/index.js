@@ -1685,8 +1685,41 @@ async function bridgePost(base, pathname, token, payload, timeoutMs = 8000, sign
 }
 
 // 把手机上开着的会话报给电脑：面板的两排下拉和 peer_sessions 都靠这份名单。
+// 手机上新开了一个对话，电脑这边还没有对应的：自动请求电脑开一个。
+// 用户的原话是「新建不了对话，之前有一版可以的」—— 那一版就是这个行为，后来被
+// 「不猜会话」的改动一起删掉了。这里只自动处理**最近 10 分钟内刚动过**的那一个，
+// 且 60 秒内最多请求一次，避免把手机上所有历史会话都开成电脑对话。
+let lastAutoPairAt = 0
+async function autoPairPhoneSessions(rows, base, token) {
+  const now = Date.now()
+  if (now - lastAutoPairAt < 60_000) return
+  let links = {}
+  try {
+    links = readJson(peerLinksPath(), {}) || {}
+  } catch {
+    links = {}
+  }
+  const fresh = rows
+    .filter((row) => row.id && !links[row.id] && row.at && now - row.at < 10 * 60_000)
+    .sort((a, b) => b.at - a.at)
+    .slice(0, 1)
+  if (!fresh.length) return
+  lastAutoPairAt = now
+  const row = fresh[0]
+  try {
+    const out = await bridgePost(base, '/collab', token, { phoneId: row.id }, 8000)
+    if (out && out.ok !== false) {
+      console.log(`[phone-bridge] 手机会话 ${shortSession(row.id)} 没有电脑对话，已请求电脑新开一个`)
+    }
+  } catch (error) {
+    lastAutoPairAt = 0
+    console.log(`[phone-bridge] 自动为手机会话开对话失败：${String(error?.message || error)}`)
+  }
+}
+
 async function reportPhoneSessions(agents, base, token) {
-  for (const row of listLiveSessions(agents).slice(0, 12)) {
+  const rows = listLiveSessions(agents).slice(0, 12)
+  for (const row of rows) {
     try {
       await bridgePost(
         base,
@@ -1712,6 +1745,9 @@ async function reportPhoneSessions(agents, base, token) {
       if (/ECONNREFUSED|ENOTFOUND|fetch failed|aborted|timeout/i.test(message)) return
     }
   }
+  try {
+    await autoPairPhoneSessions(rows, base, token)
+  } catch {}
 }
 
 const lastSourcePath = () => path.join(bridgeDir(), 'last-desktop.json')
@@ -1987,7 +2023,14 @@ async function inboxTick(agents, lastReport) {
     }
     // 只认「明确配对的」手机会话：pinned 来自用户显式选择（collab/link）。
     // 绝不退回 live[0]——那会把所有电脑会话的消息挤进同一个手机会话。
-    const fallback = (pinned && live.find((row) => row.id === pinned)) || null
+    // 但 pinned 可能是早就关掉的那个（用户后来新建了会话），这时退到「上一次真正
+    // 投过的那台手机」——那是明确的来源，不是猜：手机回话本来就该回到刚才那个窗口。
+    const lastSource = readJson(lastSourcePath(), {}) || {}
+    const lastPhoneId = String(lastSource.phoneId || '')
+    const fallback =
+      (pinned && live.find((row) => row.id === pinned)) ||
+      (lastPhoneId && live.find((row) => row.id === lastPhoneId)) ||
+      null
     // 分组：带 desktopId 的按「来源电脑会话」各自分身；没带的保持老规矩
     // （点名的投给点名那个，没点名的投给 pinned / 最近活会话）。
     const groups = new Map()
