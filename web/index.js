@@ -843,7 +843,7 @@ function writeWakeState(value) {
  * Deliver one user message into a live Session through the engine's own agent
  * service, the same path the Web UI uses.
  */
-const BUSY_TIMEOUT_MS = Number(process.env.PHONE_BRIDGE_BUSY_MS || 120_000)
+const BUSY_TIMEOUT_MS = Number(process.env.PHONE_BRIDGE_BUSY_MS || 15_000)
 const busySince = new Map()
 
 export async function wakeSession(agents, sessionId, text, mode = 'queue', options = {}) {
@@ -877,9 +877,10 @@ export async function wakeSession(agents, sessionId, text, mode = 'queue', optio
     }
     console.log(`[phone-bridge] 会话 ${shortSession(sessionId)}… 报忙已 ${Math.round(stuckFor / 1000)}s，状态多半卡住了，这次强行投递`)
     busySince.delete(sessionId)
-  } else {
-    busySince.delete(sessionId)
   }
+  // 注意：status 空或 idle 时**不要**清 busySince —— 实测会话状态会在 idle/running
+  // 之间闪，一清就重新计时，永远攒不满 BUSY_TIMEOUT_MS，消息永远投不进去。
+  // busySince 只在「真投出去」之后由下方清掉。
   const message = {
     id: crypto.randomUUID(),
     role: 'user',
@@ -888,6 +889,7 @@ export async function wakeSession(agents, sessionId, text, mode = 'queue', optio
   }
   if (mode === 'steer' && typeof agent.steer === 'function') agent.steer(message)
   else agent.followup(message)
+  busySince.delete(sessionId)
   return { sessionId, mode: mode === 'steer' ? 'steer' : 'queue', preview: String(text).slice(0, 120), at: new Date().toISOString() }
 }
 
@@ -1130,18 +1132,26 @@ async function wakeTick(agents) {
   // 首次启动：把 cursor 对齐到「现在最后一条」，一条历史都不投。
   // 空工作台时 last 是 0，也要落一个 aligned 标记 —— 否则每个 tick 都重新对齐，
   // 等第一条消息落盘正好被对齐成「已处理」，消息就永远不投了。
-  if (!state.aligned && !state.cursor) {
-    try {
-      const last = await alignCursor((query) => threadPath(config, query))
-      state.cursor = Math.max(Number(state.cursor) || 0, last)
+  if (!state.aligned) {
+    // cursor 有值但 aligned 丢了：不能重新对齐（那会把真消息当历史一次性跳过），
+    // 也不能什么都不做 —— 老代码只处理 !aligned && !cursor，两个条件同时成立时
+    // 每轮都跳过对齐、又只读 cursor 之后那一段，结果是「状态卡死，一条都投不出去」。
+    if (Number(state.cursor) > 0) {
       state.aligned = true
-      state.lastError = ''
       writeWakeState(state)
-    } catch (error) {
-      state.lastError = `对齐游标失败：${String(error?.message || error)}`
-      writeWakeState(state)
+    } else {
+      try {
+        const last = await alignCursor((query) => threadPath(config, query))
+        state.cursor = Math.max(Number(state.cursor) || 0, last)
+        state.aligned = true
+        state.lastError = ''
+        writeWakeState(state)
+      } catch (error) {
+        state.lastError = `对齐游标失败：${String(error?.message || error)}`
+        writeWakeState(state)
+      }
+      return
     }
-    return
   }
 
   let data
@@ -1771,20 +1781,28 @@ async function inboxTick(agents, lastReport) {
   }
 
   // 和桌面侧一个规矩：第一次跑先把 cursor 对齐到最新，不把历史灌进会话。
-  if (!state.aligned && !state.cursor) {
-    try {
-      const last = await alignCursor((query) => bridgeGet(base, `/thread?${query}`, config?.token, 8000), 'phone')
-      // 工作台为空时 last 是 0，也要记下「已对齐」，否则每个 tick 都重对齐，
-      // 等第一条消息落盘正好被对齐成已处理，永远不投。
-      state.cursor = Math.max(Number(state.cursor) || 0, last)
+  // 但 cursor 有值而 aligned 丢了时（旧版本迁移 / 状态被并发覆盖），既不能重新对齐
+  // （会把真消息一次性跳过），也不能继续只读 cursor 之后 —— 老代码只处理
+  // !aligned && !cursor，两条件同时成立就永远卡死，一条也投不出去。所以先把标记补上。
+  if (!state.aligned) {
+    if (Number(state.cursor) > 0) {
       state.aligned = true
-      state.lastError = ''
       writeJson(inboxStatePath(), state)
-    } catch (error) {
-      state.lastError = `对齐游标失败：${String(error?.message || error)}`
-      writeJson(inboxStatePath(), state)
+    } else {
+      try {
+        const last = await alignCursor((query) => bridgeGet(base, `/thread?${query}`, config?.token, 8000), 'phone')
+        // 工作台为空时 last 是 0，也要记下「已对齐」，否则每个 tick 都重对齐，
+        // 等第一条消息落盘正好被对齐成已处理，永远不投。
+        state.cursor = Math.max(Number(state.cursor) || 0, last)
+        state.aligned = true
+        state.lastError = ''
+        writeJson(inboxStatePath(), state)
+      } catch (error) {
+        state.lastError = `对齐游标失败：${String(error?.message || error)}`
+        writeJson(inboxStatePath(), state)
+      }
+      return lastReport
     }
-    return lastReport
   }
 
   let data
