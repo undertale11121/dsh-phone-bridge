@@ -1995,7 +1995,16 @@ async function inboxTick(agents, lastReport) {
   // 预建 / 首次投递时把电脑会话的标题带过去，手机会话才不会是一条无标题的空白条目
   const titleOf = (desktopId) => {
     const hit = peerSessions.find((row) => row && String(row.id) === String(desktopId))
-    return String((hit && hit.title) || '')
+    const fromLive = String((hit && hit.title) || '')
+    if (fromLive) return fromLive
+    // 电脑上那个会话可能已经关了（只剩 links 里一条映射），这时从本机 projcache 里
+    // 把标题捞出来——手机会话照样要有名字，否则 App 列表里又是一条空白条目。
+    try {
+      const meta = sessionMeta(String(desktopId)) || {}
+      return String(meta.title || sessionTitle(String(desktopId)) || '')
+    } catch {
+      return ''
+    }
   }
   // 同上：只认用户显式选的配对，不再取「最近点过开关的那个」。
   const pinned = String(collab?.phoneSessionId || '')
