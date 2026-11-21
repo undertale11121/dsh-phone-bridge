@@ -262,13 +262,15 @@ function printPatch() {
   console.log(`          - auto`)
   console.log(`        toolCallTimeoutMs: ${timeout}`)
   console.log('        failOnStartupError: false')
+  console.log('        # 让桥接知道是哪个会话在调用它（自动唤醒要用）')
+  console.log('        dshGoPhoneCaller: true')
   if (!isPhone) {
     // 桌面端的 26 个工具由宿主半注册（web/index.js），这条 MCP 行只负责把桥接拉起来；
     // 两者都注册会撞 already registered the same action。
+    // 必须放在 config 的所有子项之后：`disabled` 是 config 的兄弟键（6 空格），
+    // 写在这里之前会把后面 8 空格的 dshGoPhoneCaller 并进 `disabled` 的标量值，YAML 直接非法。
     console.log('      disabled: true')
   }
-  console.log('        # 让桥接知道是哪个会话在调用它（自动唤醒要用）')
-  console.log('        dshGoPhoneCaller: true')
 }
 
 async function doctor() {
@@ -283,7 +285,8 @@ async function doctor() {
   const phonePatch = process.env.PHONE_BRIDGE_PHONE_PATCH || '/opt/dsh-app/phone/phone.patch.yml'
   // proot Ubuntu on the phone reports platform=linux, so detect by the app's
   // own files instead of the platform string.
-  const onPhone = fs.existsSync(relay) || fs.existsSync(relayConfig) || fs.existsSync('/sdcard')
+  // 和 detectRole 用同一套判断：桌面 Linux 也可能挂着 /sdcard，光看它会把桌面端误报成手机端。
+  const onPhone = detectRole() === 'phone'
   const hasDesktop = fs.existsSync(desktopConfigPath())
   if (onPhone) {
     lines.push('—— 手机端 ——')

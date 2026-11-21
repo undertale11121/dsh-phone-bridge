@@ -371,9 +371,11 @@ export function qrSvg(text, { margin = 4, dark = '#0b0c0e', light = '#ffffff', l
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
+  // 颜色也是拼进属性的：调用方传进来含引号的值能注入新属性（label 之前已经踩过）。
+  const color = (v, fallback) => esc(v == null || v === '' ? fallback : v)
   const labelText = esc(label || 'QR')
   const title = label ? `<title>${labelText}</title>` : ''
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${full * 8}" height="${full * 8}" viewBox="0 0 ${full} ${full}" shape-rendering="crispEdges" role="img" aria-label="${labelText}">${title}<rect width="${full}" height="${full}" fill="${light}"/><path d="${path.join('')}" fill="${dark}"/></svg>`
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${full * 8}" height="${full * 8}" viewBox="0 0 ${full} ${full}" shape-rendering="crispEdges" role="img" aria-label="${labelText}">${title}<rect width="${full}" height="${full}" fill="${color(light, '#ffffff')}"/><path d="${path.join('')}" fill="${color(dark, '#0b0c0e')}"/></svg>`
 }
 
 function crc32(buffer) {

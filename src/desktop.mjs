@@ -176,9 +176,29 @@ function removeLock() {
   }
 }
 
+// 反向代理/隧道（cloudflared、frp、nginx）把请求转给本机时，socket 的
+// remoteAddress 也是 127.0.0.1。只看它会把「公网进来的请求」当成本机用户，
+// 于是 /permit、/code、/pair/approve 和 /health 里的配对串全都对隧道敞开了。
+// 真正的本机请求不带转发头，且 Host 必然是回环地址。
+const PROXY_HEADERS = ['x-forwarded-for', 'x-forwarded-host', 'x-real-ip', 'cf-connecting-ip', 'forwarded', 'true-client-ip', 'x-client-ip']
+
+function proxyForwarded(req) {
+  const headers = req?.headers || {}
+  return PROXY_HEADERS.some((name) => Boolean(headers[name]))
+}
+
+function loopbackHost(value) {
+  const host = String(value || '').trim().toLowerCase()
+  if (!host) return false
+  if (host.startsWith('[')) return host.slice(0, host.indexOf(']') + 1) === '[::1]'
+  const name = host.split(':')[0]
+  return name === '127.0.0.1' || name === 'localhost'
+}
+
 function isLoopback(req) {
   const address = String(req.socket?.remoteAddress || '')
-  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
+  const fromLoopback = address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
+  return fromLoopback && !proxyForwarded(req) && loopbackHost(req.headers?.host)
 }
 
 function pidAlive(pid) {
@@ -281,6 +301,7 @@ class DesktopBridge {
     this.logFile = null
     this.pairWindowUntil = 0
     this.code = null
+    this.codeFailures = 0
     this.pendingPair = null
     // 重启别把已经配对的手机当成陌生设备。devices 里记着就恢复出来，
     // 否则 /health 会一直 online:false，而手机其实在正常轮询——所有需要
@@ -327,6 +348,7 @@ class DesktopBridge {
   issueCode(ms = 120_000) {
     const value = String(randomInt(0, 1_000_000)).padStart(6, '0')
     this.code = { value, until: Date.now() + Math.max(10_000, Math.min(Number(ms) || 120_000, 10 * 60_000)) }
+    this.codeFailures = 0
     log(`配对码：${value}（${Math.round(this.codeLeft / 1000)} 秒内有效）`)
     return { code: value, left: this.codeLeft }
   }
@@ -371,6 +393,9 @@ class DesktopBridge {
       setLogFile(this.logFile)
     }
     const server = http.createServer((req, res) => {
+      // 手机断线/换网时往已关闭的连接写响应会触发 res 的 'error'；不监听的话
+      // EventEmitter 会把它抛成 uncaughtException，整个桥接进程跟着退出。
+      res.on('error', () => {})
       this.route(req, res).catch((error) => {
         log(`HTTP 处理失败：${error?.message || error}`)
         try {
@@ -484,8 +509,18 @@ class DesktopBridge {
         if (keyOk && this.codeLeft > 0 && tokenEqual(auth.code, this.code?.value)) {
           this.registerDevice(incoming)
           this.code = null
+          this.codeFailures = 0
           authorized = true
           log(`配对码验证通过：${incoming.name || 'phone'}`)
+        } else if (keyOk && this.codeLeft > 0) {
+          // /auth 不需要任何凭据，6 位码在窗口期内可以被暴力枚举；连续输错到
+          // 上限就作废这一轮，攻击者必须等用户在电脑上重新生成。
+          this.codeFailures += 1
+          if (this.codeFailures >= 10) {
+            this.code = null
+            this.codeFailures = 0
+            log('配对码连续输错 10 次，已作废；请在电脑上重新生成')
+          }
         }
       } else if (auth.k === 'device' && keyOk && this.permitLeft > 0) {
         // Pairing window: trust the key the caller presents, the signature only
@@ -516,7 +551,6 @@ class DesktopBridge {
       const ok =
         auth.k === 'token' ? tokenEqual(auth.token, this.config.token) : authFresh(auth) && this.verifyDevice(`${auth.id}:${auth.ts}`, auth.sig, auth.id)
       if (!ok) return sendJson(res, 401, { ok: false })
-      const wait = Math.min(Number(url.searchParams.get('wait') || 25000) || 25000, 60000)
       const wasOnline = this.online
       this.markSeen(auth.id)
       this.lastPoll = Date.now()
@@ -527,7 +561,19 @@ class DesktopBridge {
           threadAppend('desktop', `（${this.device.name || '手机'}已连上，可以派活了）`, 'all', { notice: true })
         } catch {}
       }
-      const reqs = await this.nextRequests(wait)
+      // 手机执行慢操作时用心跳式轮询（wait=0，只取一次立即返回）。以前
+      // `Number(x) || 25000` 把 0 当成「没传」，心跳变成 25 秒长轮询、客户端
+      // 5 秒就超时，残留的旧轮询还会吞掉随后派下来的请求。
+      const rawWait = url.searchParams.get('wait')
+      const waitMs = rawWait === null || rawWait === '' ? 25_000 : Math.min(Math.max(Number(rawWait) || 0, 0), 60_000)
+      // 手机换网/重连会先 abort 旧长轮询。旧连接必须能被识别出来，不能再从队列里
+      // 取请求（取了也写不回去），否则这次工具调用在手机侧直接超时。
+      let aborted = false
+      res.on('close', () => {
+        if (!res.writableEnded) aborted = true
+      })
+      const reqs = await this.nextRequests(waitMs, () => !aborted && !res.writableEnded && !res.destroyed)
+      if (aborted || res.writableEnded || res.destroyed) return
       return sendJson(res, 200, { reqs })
     }
     if (req.method === 'POST' && route === '/res') {
@@ -781,7 +827,10 @@ class DesktopBridge {
         if (this.verifyDevice(this.challenge.value, auth.sig, String(auth.id || ''))) return true
       }
       if (!this.verifyDevice(`${auth.id}:${auth.ts}`, auth.sig, String(auth.id || ''))) return false
-      return Math.abs(Date.now() - Number(auth.ts)) <= 5 * 60_000
+      // 和 /poll 用同一个窗口（authFresh，6 小时）。这里原来写死 5 分钟，
+      // 手机时钟偏差两个多小时后 /poll 一直正常、/call /res 却全 401，
+      // 表现成「连着但工具全失败」。
+      return authFresh(auth)
     }
     if (auth.k === 'token') return tokenEqual(auth.token, this.config.token)
     return false
@@ -875,13 +924,20 @@ class DesktopBridge {
     if (previousId !== id) this.failPending('手机重新连接，打断未完成的任务')
   }
 
-  nextRequests(waitMs) {
+  nextRequests(waitMs, isAlive = () => true) {
     if (this.queue.length) return Promise.resolve(this.takeQueued())
+    if (!(waitMs > 0)) return Promise.resolve([])
     return new Promise((resolve) => {
       // A waiter only resolves when it actually takes a request. Stale waiters
       // (an aborted poll from a phone that reconnected) must never swallow a
       // queued request, otherwise the caller waits forever.
       const waiter = () => {
+        if (!isAlive()) {
+          clearTimeout(timer)
+          this.waiters.delete(waiter)
+          resolve([])
+          return
+        }
         if (!this.queue.length) return
         clearTimeout(timer)
         this.waiters.delete(waiter)
@@ -1128,7 +1184,9 @@ class DesktopBridge {
       }, timeout)
       this.pending.set(id, { resolve, reject, timer, onProgress })
       this.queue.push({ id, op, args: args || {} })
-      for (const waiter of [...this.waiters]) waiter()
+      // 后加入的 waiter 是最新一次长轮询；倒序唤醒它，避免已断开的旧轮询
+      // 先把请求抢走写进死 socket（手机侧只能等到超时）。
+      for (const waiter of [...this.waiters].reverse()) waiter()
     })
   }
 
@@ -1213,19 +1271,28 @@ export function authFresh(auth, windowMs = 6 * 60 * 60_000) {
 }
 
 // /health 免鉴权，但配对串里带着 token；只认本机回环（含 IPv4-mapped）。
+// 同样要排除隧道/反代：它们到达时 socket 也是回环，但 Host 是公网域名。
 function loopbackPeer(req) {
   const address = String(req?.socket?.remoteAddress || '')
-  return /^(?:::1|::ffff:127\.|127\.)/.test(address)
+  if (!/^(?:::1|::ffff:127\.|127\.)/.test(address)) return false
+  return !proxyForwarded(req) && loopbackHost(req?.headers?.host)
 }
 
 function readBody(req, limit = MAX_BODY) {
   return new Promise((resolve, reject) => {
     let size = 0
+    let done = false
     const chunks = []
+    const settle = (fn, value) => {
+      if (done) return
+      done = true
+      fn(value)
+    }
     req.on('data', (chunk) => {
+      if (done) return
       size += chunk.length
       if (size > limit) {
-        reject(new Error('请求体过大'))
+        settle(reject, new Error('请求体过大'))
         req.destroy()
         return
       }
@@ -1233,12 +1300,17 @@ function readBody(req, limit = MAX_BODY) {
     })
     req.on('end', () => {
       try {
-        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'))
+        settle(resolve, JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'))
       } catch (error) {
-        reject(error)
+        settle(reject, error)
       }
     })
-    req.on('error', reject)
+    req.on('error', (error) => settle(reject, error))
+    // 客户端 body 发到一半就断线时 'end'/'error' 都可能不触发；没有这个兜底
+    // 该请求的 handler 会一直挂着，res 也不关。
+    req.on('close', () => {
+      if (!done && !req.complete) settle(reject, new Error('请求被中断'))
+    })
   })
 }
 
@@ -2020,12 +2092,18 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
       const apkPath = findApk(data.stdout || '')
       const lines = [formatShell(data)]
       if (apkPath) {
-        const asFile = await bridge.call('file.get', { path: apkPath }, { timeoutMs: 5 * 60 * 1000 })
-        const dest = path.resolve(args.destPath || path.basename(apkPath))
-        ensureDir(path.dirname(dest))
-        fs.writeFileSync(dest, Buffer.from(asFile.b64, 'base64'))
-        lines.push(`\nAPK 已取回：${dest}（${humanSize(asFile.size)}）`)
-        log(`APK 已取回：${dest}`)
+        try {
+          const asFile = await bridge.call('file.get', { path: apkPath }, { timeoutMs: 5 * 60 * 1000 })
+          const dest = path.resolve(args.destPath || path.basename(apkPath))
+          ensureDir(path.dirname(dest))
+          fs.writeFileSync(dest, Buffer.from(asFile.b64, 'base64'))
+          lines.push(`\nAPK 已取回：${dest}（${humanSize(asFile.size)}）`)
+          log(`APK 已取回：${dest}`)
+        } catch (error) {
+          // 构建可能已经成功，只是打印出来的路径取不到文件；别把整次构建输出丢掉。
+          lines.push(`\nAPK 取回失败：${error?.message || error}（路径：${apkPath}）`)
+          log(`APK 取回失败：${error?.message || error}`)
+        }
       } else {
         lines.push('\n[输出里没有 .apk 路径；构建成功的话把 apk 路径打印出来]')
       }
@@ -2040,6 +2118,9 @@ ${formatThread(threadRead(Math.max(0, row.seq - 4), 12))}`
         const local = path.resolve(String(args.path))
         if (!fs.existsSync(local)) throw new Error(`桌面上没有这个文件：${local}`)
         const size = fs.statSync(local).size
+        // 手机端接收上限 16MB（peer_put 也按这个卡）；不先拦的话大文件会一路
+        // base64 到 24MB 的 body 上限，报一个跟真实原因无关的错。
+        if (size > MAX_FILE_BYTES) throw new Error(`文件太大（${humanSize(size)}），上限 16MB`)
         const dest = args.destPath || `/sdcard/Download/DSH-Go/${path.basename(local)}`
         const data = await bridge.call(
           'file.put',

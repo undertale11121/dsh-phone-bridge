@@ -78,6 +78,15 @@ async function tick() {
     if (res.status === 403) { meta.textContent = '配对令牌失效'; return; }
     const data = await res.json();
     const messages = data.messages || [];
+    // 工作台被 reset / thread.jsonl 被删时 seq 从 1 重来，而页面里的游标还是旧的大数：
+    // 之后每次 /thread?since=大数 都返回空，页面永远停在旧内容上（一条新消息都看不到）。
+    // 服务端会把文件里最新的 seq 放在 maxSeq 里，游标比它还新就说明该从头对齐。
+    if (Number.isFinite(Number(data.maxSeq)) && Number(data.maxSeq) < since) {
+      since = 0;
+      lastCount = 0;
+      log.innerHTML = '';
+      return;
+    }
     if (data.total === 0) {
       log.innerHTML = '<div class="empty">还没有对话。</div>';
     } else if (messages.length) {

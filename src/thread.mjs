@@ -101,7 +101,9 @@ export const LEVEL_ORDER = ['urgent', 'alert', 'question', 'done', 'report', 'no
 
 export function normalizeLevel(value) {
   const key = String(value == null ? '' : value).trim().toLowerCase()
-  if (LEVELS[key] && key !== 'normal') return key
+  // 用 hasOwn：'__proto__' / 'constructor' / 'toString' 也能让 LEVELS[key] 为真，
+  // 会被当成合法 level 写进 thread.jsonl（渲染端查不到、只显示成普通消息）。
+  if (key !== 'normal' && Object.prototype.hasOwnProperty.call(LEVELS, key)) return key
   // 也接受直接发表情符号（模型可能懒得写英文）
   for (const [name, item] of Object.entries(LEVELS)) {
     if (item.mark && key === item.mark) return name

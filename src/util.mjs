@@ -106,7 +106,16 @@ export function setLogFile(file) {
 
 export function log(...parts) {
   const text = parts
-    .map((p) => (typeof p === 'string' ? p : JSON.stringify(p)))
+    // JSON.stringify 对循环引用 / BigInt 会抛；log 又经常在 catch 里被调用，
+    // 一抛就让「记录失败」变成「处理失败的那段代码二次崩掉」。
+    .map((p) => {
+      if (typeof p === 'string') return p
+      try {
+        return JSON.stringify(p)
+      } catch {
+        return String(p)
+      }
+    })
     .join(' ')
   const line = `${PREFIX} ${new Date().toISOString()} ${text}`
   try {

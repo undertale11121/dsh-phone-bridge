@@ -91,7 +91,21 @@ async function main() {
     writeLog(chunk.toString().trim())
   })
   child.stderr.on('data', (chunk) => writeLog(`stderr: ${chunk.toString().trim()}`))
-  const code = await new Promise((resolve) => child.on('close', resolve))
+  // spawn 失败（DSH_BIN 不存在 / 没有执行权限）不会触发 close，只会发 'error'：
+  // 不监听就是未捕获的 error 事件，整个进程带着堆栈崩掉，工作台上也收不到任何回执。
+  const code = await new Promise((resolve) => {
+    let settled = false
+    const settle = (value) => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
+    child.on('close', (exitCode) => settle(exitCode))
+    child.on('error', (error) => {
+      writeLog(`启动失败：${error?.message || error}`)
+      settle(-1)
+    })
+  })
 
   // Pull the final assistant text out of the NDJSON stream and put it on the
   // workbench, so the parent model sees the result even if it never asked again.

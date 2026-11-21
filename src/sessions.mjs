@@ -99,6 +99,9 @@ export function resolveSession(target, data = loadRegistry()) {
     return latest ? { id: latest.id, ...latest } : null
   }
   value = value.replace(/^desktop:/, '').replace(/^peer:/, '')
+  // 只给前缀（"desktop:"）时剥完就是空串；空串会让下面的 includes('')/startsWith('') 恒真，
+  // 于是任何一次误传都静默落到「注册表里第一个会话」上，消息直接串会话。
+  if (!value) return null
   if (sessions[value]) return { id: value, ...sessions[value] }
   const lowered = value.toLowerCase()
   const rows = Object.values(sessions)

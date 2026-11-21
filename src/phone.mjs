@@ -223,6 +223,12 @@ export class PhoneBridge {
     this.relayStarting = null
     this.relayCalls = 0
     this.relayIdle = null
+    // 心跳 /poll 取回来的请求不能丢（桌面侧 takeQueued() 已经把请求从队列里拿走了）：
+    // 先排在这里，主轮询循环空闲出来再按顺序执行。
+    this.deferredReqs = []
+    this.heartbeatBusy = false
+    // stop() 会 +1；ensureRelay 用它判断「建 relay 期间桥接有没有被停掉」，停过就不留孤儿进程。
+    this.lifecycle = 0
     this.authFailed = false
     this.connected = false
     this.desktop = null
@@ -254,6 +260,8 @@ export class PhoneBridge {
     this.config.autoUrl = ''
     this.authFailed = false
     this.connected = false
+    // 旧电脑的请求已经作废（桌面侧也会在换设备时清 pending），别在新链路上执行。
+    this.deferredReqs = []
     if (!this.running) this.start()
     else this.peer?.reconfigure()
   }
@@ -281,6 +289,7 @@ export class PhoneBridge {
     savePhoneConfig(config)
     this.config = { ...this.config, url: '', token: '', autoUrl: '' }
     this.connected = false
+    this.deferredReqs = []
     this.desktop = null
   }
 
@@ -291,6 +300,9 @@ export class PhoneBridge {
     this.peer?.stop()
     this.peer = null
     this.running = true
+    // stop() 那一刻可能还有 ensureRelay 在启动：那个 Promise 会因为 lifecycle
+    // 不匹配把自己收掉，这里先清掉引用，别让新链路的首次工具调用去等它失败。
+    this.relayStarting = null
     this.loop().catch((error) => log(`连接循环退出：${explainError(error)}`))
     this.peer = ensurePeerLink({
       // 用 getConfig 而不是把对象传进去：this.config 会被整体替换（pair/connectTo/unpair），
@@ -314,6 +326,10 @@ export class PhoneBridge {
 
   stop() {
     this.running = false
+    // 让正在启动中继的 ensureRelay 知道桥接已经停了：它建好子进程后会自己收掉，
+    // 而不是挂到一个再也 stop() 不到的实例上变成孤儿进程。
+    this.lifecycle += 1
+    this.deferredReqs = []
     if (this.relayIdle) {
       clearTimeout(this.relayIdle)
       this.relayIdle = null
@@ -445,6 +461,14 @@ export class PhoneBridge {
   async pollForever() {
     let misses = 0
     while (this.running) {
+      // 慢操作期间心跳 /poll 取回来的请求排在这里：先按顺序执行完，再回长轮询。
+      // 以前心跳把结果直接丢弃，桌面侧的 call() 只能等满 toolTimeoutMs（默认 30 分钟）
+      // 才报超时，而请求已经被 takeQueued() 从队列拿走了 —— 那个工具调用永远不会执行。
+      if (this.deferredReqs.length) {
+        const req = this.deferredReqs.shift()
+        if (req?.id) await this.handleRequest(req)
+        continue
+      }
       let data
       try {
         data = await this.get('/poll', { wait: String(POLL_WAIT) }, 25_000)
@@ -476,7 +500,19 @@ export class PhoneBridge {
     // 执行一个慢操作（截屏/装 APK/长 shell）时，pollForever 被占住不再 /poll，
     // 电脑侧 70 秒收不到心跳就判离线 —— 模型白等到超时。执行期间自己发心跳。
     const heartbeat = setInterval(() => {
-      this.get('/poll', { wait: '0' }, 5000).catch(() => {})
+      if (this.heartbeatBusy) return
+      this.heartbeatBusy = true
+      // wait=1 而不是 wait=0：桌面端 /poll 把 wait=0 当成缺省值（Number('0') || 25000），
+      // 实际会挂 25 秒长轮询，5 秒超时 abort 之后那个 waiter 还活着，会在后台把新请求
+      // 抢走再往已关闭的连接回包。要的是「立刻返回、顺便把排队的请求取出来」。
+      this.get('/poll', { wait: '1' }, 5000)
+        .then((data) => this.deferRequests(data?.reqs))
+        .catch(() => {
+          /* 心跳失败不影响正在执行的操作，主循环下一轮会重连 */
+        })
+        .finally(() => {
+          this.heartbeatBusy = false
+        })
     }, 20_000)
     heartbeat.unref?.()
     try {
@@ -490,6 +526,16 @@ export class PhoneBridge {
       log(`执行 ${req.op} 失败：${explainError(error)}`)
     } finally {
       clearInterval(heartbeat)
+    }
+  }
+
+  // 心跳 /poll 拿到的请求先排队（按 id 去重），由 pollForever 空闲时按序执行。
+  deferRequests(reqs) {
+    if (!Array.isArray(reqs) || !reqs.length) return
+    for (const req of reqs) {
+      if (!req?.id) continue
+      if (this.deferredReqs.some((item) => item.id === req.id)) continue
+      this.deferredReqs.push(req)
     }
   }
 
@@ -562,30 +608,47 @@ export class PhoneBridge {
     // 两个工具调用同时进来时，await child.start() 这段时间 this.relay 还是 null，
     // 会各起一个中继（手机上表现为两个 relay.cjs 抢同一份配置）。复用同一个 Promise。
     if (this.relayStarting) return this.relayStarting
-    this.relayStarting = (async () => {
-      try {
-        if (!fs.existsSync(RELAY)) throw new Error(`找不到手机桥接中继：${RELAY}`)
-        if (!fs.existsSync(RELAY_CONFIG)) throw new Error(`找不到手机桥接配置：${RELAY_CONFIG}`)
-        const child = new McpChild({
-          command: process.execPath,
-          args: [RELAY, RELAY_CONFIG],
-          name: 'phone-relay',
-          env: { ...process.env, DSH_PHONE_RELAY: '1' },
-          requestTimeoutMs: 120_000,
-        })
-        await child.start()
-        this.relay = child
-        child.onExit = () => {
-          // 只清自己：scheduleRelayIdle 先置 null 再 stop()，kill 是异步的，
-          // 旧 child 的 exit 可能在新 relay 建好之后才到，无条件清会把新的抹掉。
-          if (this.relay === child) this.relay = null
+    // 注意不能写成 `this.relayStarting = (async()=>{...finally 里引用自身})()`：
+    // 中继文件不存在时 async 函数会同步抛错，finally 在变量初始化之前跑 → TDZ
+    // 「Cannot access 'x' before initialization」，把真正的错误盖掉。
+    const pending = (async () => {
+      const life = this.lifecycle
+      if (!fs.existsSync(RELAY)) throw new Error(`找不到手机桥接中继：${RELAY}`)
+      if (!fs.existsSync(RELAY_CONFIG)) throw new Error(`找不到手机桥接配置：${RELAY_CONFIG}`)
+      const child = new McpChild({
+        command: process.execPath,
+        args: [RELAY, RELAY_CONFIG],
+        name: 'phone-relay',
+        env: { ...process.env, DSH_PHONE_RELAY: '1' },
+        requestTimeoutMs: 120_000,
+      })
+      await child.start()
+      // 启动这段时间里桥接被 stop() 了（关进程/重新配对）：子进程已经建好，
+      // 但实例不会再持有它，直接收掉，否则就是一个关不掉的孤儿 relay.cjs。
+      if (life !== this.lifecycle) {
+        try {
+          child.stop()
+        } catch {
+          /* ignore */
         }
-        return child
-      } finally {
-        this.relayStarting = null
+        throw new Error('桥接已停止，取消启动中继')
       }
+      this.relay = child
+      child.onExit = () => {
+        // 只清自己：scheduleRelayIdle 先置 null 再 stop()，kill 是异步的，
+        // 旧 child 的 exit 可能在新 relay 建好之后才到，无条件清会把新的抹掉。
+        if (this.relay === child) this.relay = null
+      }
+      return child
     })()
-    return this.relayStarting
+    this.relayStarting = pending
+    // 只清自己：stop()/start() 之后可能已经有新的启动 Promise，
+    // 无条件清会把新的抹掉，下一个工具调用就会再起一个 relay.cjs。
+    const clear = () => {
+      if (this.relayStarting === pending) this.relayStarting = null
+    }
+    pending.then(clear, clear)
+    return pending
   }
 
   // The relay/APK cannot run two tool calls at once; serialize them.
@@ -905,13 +968,13 @@ export class PhoneBridge {
     const confirmWords = ['安装', '继续安装', '仍要安装', '确定', '打开']
     const steps = []
     const result = await this.withRelay(async (relay) => {
-      const opened = await relay.callTool('open', { url: `file://${apk}` }, 120_000)
+      const opened = readToolResult(await relay.callTool('open', { url: `file://${apk}` }, 120_000))
       steps.push(`打开安装器：${(opened?.text || '').trim().slice(0, 200)}`)
       let screenText = ''
       let tapped = 0
       for (let i = 0; i < 24; i += 1) {
         await sleep(1500)
-        const screen = await relay.callTool('screen', {}, 90_000)
+        const screen = readToolResult(await relay.callTool('screen', {}, 90_000))
         screenText = (screen?.text || '').trim()
         const rows = parseScreenRows(screenText)
         const confirmed = rows.find((row) => confirmWords.some((word) => row.text.includes(word)) && row.text.length <= 24)
@@ -928,7 +991,7 @@ export class PhoneBridge {
       let installed = false
       if (pkg) {
         try {
-          const apps = await relay.callTool('apps', { query: pkg }, 90_000)
+          const apps = readToolResult(await relay.callTool('apps', { query: pkg }, 90_000))
           installed = String(apps?.text || '').includes(pkg)
         } catch {
           /* app list is best effort */
@@ -1044,7 +1107,9 @@ export class PhoneBridge {
       if (rows.length) return { row, messages: rows }
       if (Date.now() >= deadline) break
     }
-    return { row, messages: [], timedOut: true }
+    // 调用方（agent_converse / peer_converse）会打印「等待了 result.seconds 秒」，
+    // 超时路径漏了它，界面上就是「undefined 秒内没有回话」。
+    return { row, messages: [], timedOut: true, seconds }
   }
 
   async spawnAgentLocal({ name, task } = {}) {
@@ -1152,7 +1217,10 @@ export class PhoneBridge {
 
   async readThread(since = 0, wait = 0) {
     const cache = loadCache()
-    const result = await this.get('/thread', { since: String(since), wait: String(wait) })
+    // 桌面端单次 /thread 长轮询最多挂 55 秒（有 clamp），而 get() 默认超时 45 秒：
+    // wait 传大一点（比如 converse 的 120 秒）就会在桌面回包前 abort，永远拿不到回复。
+    const timeoutMs = Number(wait) > 0 ? Math.min(Number(wait), 55_000) + 10_000 : 45_000
+    const result = await this.get('/thread', { since: String(since), wait: String(wait) }, timeoutMs)
     if (result?.messages?.length) {
       const merged = [...(cache.messages || []), ...result.messages]
       const bySeq = new Map(merged.map((row) => [row.seq, row]))
@@ -1164,8 +1232,15 @@ export class PhoneBridge {
   async converse(text, waitSeconds = 120) {
     const row = await this.say(text)
     const seconds = Math.min(Math.max(Number(waitSeconds) || 120, 5), 600)
-    const result = await this.readThread(row.seq, seconds * 1000)
-    const replies = (result?.messages || []).filter((item) => item.from === 'desktop')
+    const deadline = Date.now() + seconds * 1000
+    let replies = []
+    // 每次 readThread 最多只能覆盖桌面端 55 秒的长轮询窗口；waitSeconds 更大时
+    // 必须继续等下一段，否则「等 120 秒」实际 55 秒就报没回话。
+    while (!replies.length && Date.now() < deadline) {
+      const wait = Math.max(Math.min(deadline - Date.now(), 55_000), 1_000)
+      const result = await this.readThread(row.seq, wait)
+      replies = (result?.messages || []).filter((item) => item.from === 'desktop')
+    }
     return { row, replies, timedOut: !replies.length }
   }
 
@@ -1228,8 +1303,15 @@ export class PhoneBridge {
     const res = await this.postAt(url, '/request', { v: 2, device: this.describeDevice() })
     if (!res?.ok) throw new Error(res?.error || '电脑没有接受配对请求')
     this.config = { ...this.config, autoUrl: url, url: '', token: '' }
-    writeJson(phoneConfigPath(), this.config)
-    if (this.running) this.peer?.reconfigure()
+    // 走 savePhoneConfig：写前留 .bak，和 pair()/requestPair() 一致（写坏了还能恢复）。
+    savePhoneConfig(this.config)
+    // 以前这里只 reconfigure 不重启：连续 6 次 401 之后 running 已经是 false，
+    // 用户重新发起配对、电脑上也点了允许，手机却永远不再拨号 —— 只能重启进程。
+    this.authFailed = false
+    this.deferredReqs = []
+    this.connected = false
+    if (!this.running) this.start()
+    else this.peer?.reconfigure()
     log(`已请求配对：${url}（等电脑上点允许）`)
     return { url, name: res.name || '' }
   }
@@ -1998,7 +2080,9 @@ export async function runPhoneMcp({ withMcp = true } = {}) {
       // 的几条。以前直接 slice(0, limit) → 工作台超过 40 条以后，模型永远只看到开头，
       // 以为对话停在很早以前。先探最新 seq，再从尾部窗口取。
       const head = await bridge.readThread(0, 0)
-      const maxSeq = Number(head?.next || 0)
+      // maxSeq 才是工作台的最后一条 seq：/thread 一次最多回 200 条，next 只到第 200 条，
+      // 拿它当尾部基准会让超过 200 条的会话永远看不到最新消息。
+      const maxSeq = Number(head?.maxSeq || head?.next || 0)
       if (!maxSeq) return '工作台上还没有对话。'
       const since = Math.max(0, maxSeq - limit * 2)
       const data = await bridge.readThread(since, 0)

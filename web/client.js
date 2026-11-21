@@ -19,7 +19,8 @@ function __buildPhoneBridge(require) {
     var PACKAGE = '@undertale11121/dsh-phone-bridge'
     // 轮询快照和用户操作会互相赛跑：早发出、晚返回的旧快照会把刚写入的新状态覆盖回去
     // （开关闪回 1-5 秒）。用代次让只有最新一次 load 的响应生效。
-    var loadSeq = 0
+    // 代次必须每个组件各一份：插件页卡片和侧栏面板是两个实例，共用全局计数器时
+    // 会互相把对方的响应判成旧快照丢掉，其中一个面板就再也不刷新了。
     // The id of the sidebar row and of its `main` page. It must not collide
     // with the host's own panels (`plugins`, `dsh-market`, …).
     var PANEL_ID = 'phone-bridge'
@@ -193,6 +194,8 @@ function __buildPhoneBridge(require) {
       // 'card' = the inline card on the plugin's own page; 'panel' = the page
       // behind the sidebar row, which gets its own title line and no box.
       var surface = (options && options.surface) || 'card'
+      // 每个 Card(...) 调用得到独立的代次，互不干扰（见文件顶部说明）。
+      var loadSeq = 0
 
       return function PhoneBridgeCard(props) {
         var locale = String((pack && pack.locale) || document.documentElement.lang || 'zh')
@@ -870,6 +873,9 @@ function __buildPhoneBridge(require) {
       var h = React.createElement
       var useEffect = React.useEffect
       var useState = React.useState
+      // 和 Card 一样：只有最新一次 load 的响应能落到 state 上，避免切会话时闪旧值、
+      // 以及组件卸载后 setState。
+      var loadSeq = 0
       return function PhoneBridgeLink(props) {
         var sessionId = String((props && props.sessionId) || '')
         var statePair = useState(null)
@@ -886,19 +892,31 @@ function __buildPhoneBridge(require) {
         var setLinkError = linkErrorPair[1]
 
         function load() {
+          var gen = ++loadSeq
           fetch('/phone-bridge/config', { headers: { accept: 'application/json' } })
             .then(function (res) {
               if (!res.ok) throw new Error('HTTP ' + res.status)
               return res.json()
             })
-            .then(function (data) { setState(data); setLinkError('') })
-            .catch(function (err) { setLinkError(String((err && err.message) || err)) })
+            .then(function (data) {
+              if (gen !== loadSeq) return
+              setState(data)
+              setLinkError('')
+            })
+            .catch(function (err) {
+              if (gen !== loadSeq) return
+              setLinkError(String((err && err.message) || err))
+            })
         }
         useEffect(function () {
           load()
           // 另一端开/关互联后这边必须自己刷新，否则按钮永远显示旧状态。
           var timer = setInterval(load, 5000)
-          return function () { clearInterval(timer) }
+          return function () {
+            // 卸载 / 切会话后，之前发出去的请求回来也不许再改这个实例的状态。
+            ++loadSeq
+            clearInterval(timer)
+          }
         }, [sessionId])
 
         if (!sessionId) return null

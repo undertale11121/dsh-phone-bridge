@@ -557,6 +557,16 @@ async function runAction(body) {
     if (body.off) {
       delete links[desktopId]
       writeLinks(links)
+      // 只删 links 不清 pinned 的话，wakeTick 下一轮仍把这个会话当默认去处：用户点了
+      // 「断开互联」，不点名的消息还是继续投进去（和 collab 路由解绑时的处理一致）。
+      // 不碰 wake.enabled —— 别的会话可能还连着，关掉会把它们一起停掉。
+      const collab = readCollab(config)
+      if (collab.desktopSessionId === desktopId) {
+        collab.desktopSessionId = ''
+        const wake = readWake(config)
+        wake.sessionId = ''
+        patchConfig({ collab, wake })
+      }
       return { text: '已断开这个会话的互联' }
     }
     // 没指定手机会话时就别硬接一个现成的：以前这里接「最近上报的那个」，
@@ -809,7 +819,8 @@ function readWakeState({ strict = false } = {}) {
     lastError: String(state.lastError || ''),
     // 这两个字段以前被丢掉了：giveUp 每次从 0 开始（永不放弃重试）、
     // aligned 每次从 false 开始（每轮都要重新对齐游标）。
-    giveUp: state.giveUp && typeof state.giveUp === 'object' ? state.giveUp : {},
+    giveUp:
+      state.giveUp && typeof state.giveUp === 'object' && !Array.isArray(state.giveUp) ? state.giveUp : {},
     aligned: state.aligned === true,
     // 已投递成功的 seq。漏掉这个字段，busy 组钉住游标时同批消息会每轮重投（功能等于没修）。
     delivered: Array.isArray(state.delivered)
@@ -817,7 +828,10 @@ function readWakeState({ strict = false } = {}) {
       : [],
     // blocked 的轮次计数。桌面侧以前根本没有这个字段：blockedSeqs 只声明、只 push，
     // 从没被读取，点名会话一关就把游标永久钉死（代码审查发现）。
-    blocked: state.blocked && typeof state.blocked === 'object' ? { ...state.blocked } : {},
+    blocked:
+      state.blocked && typeof state.blocked === 'object' && !Array.isArray(state.blocked)
+        ? { ...state.blocked }
+        : {},
   }
 }
 
@@ -1151,9 +1165,10 @@ async function wakeTick(agents) {
   // 同批里已成功的组会被每 3 秒重投一次（真踩过：同一句刷了几十遍）。
   const delivered = new Set((Array.isArray(state.delivered) ? state.delivered : []).map((n) => Number(n)))
   // 已经被 agent_converse / peer_converse 当场读走的回复：同一个模型不该再看第二遍。
-  const consumed = new Set(
-    (readJson(path.join(bridgeDir(), 'consumed.json'), []) || []).map((n) => Number(n)),
-  )
+  // consumed.json 被手改成对象或写坏成非数组时，直接 .map 会抛 TypeError，而 wakeTick
+  // 每 3 秒跑一次 —— 一次抛错就彻底停止投递。非数组一律当「没有 consumed」。
+  const consumedFile = readJson(path.join(bridgeDir(), 'consumed.json'), [])
+  const consumed = new Set((Array.isArray(consumedFile) ? consumedFile : []).map((n) => Number(n)))
   const incoming = (data.messages || []).filter((item) => {
     if (!item) return false
     if (delivered.has(Number(item.seq))) {
@@ -1543,10 +1558,15 @@ function installWake(ctx) {
             const message = String(error?.message || error)
             console.error(`[phone-bridge] wake poller: ${message}`)
             try {
-              const current = readWakeState()
+              // 必须 strict 读：非 strict 会把损坏/读失败的状态当空对象，紧接着整份写回，
+              // cursor / aligned / delivered 全被抹成初始值 —— 下一轮「首次对齐」就把
+              // 积压消息永久跳过（和 runAction 里 wake 分支的同类修复保持一致）。
+              const current = readWakeState({ strict: true })
               current.lastError = `唤醒轮询出错：${message}`
               writeWakeState(current)
-            } catch {}
+            } catch {
+              // 状态文件读不出来（损坏/被占用）时只留控制台日志，绝不用默认值覆盖它。
+            }
           })
           .finally(() => {
             busy = false
@@ -1723,6 +1743,9 @@ function phoneBase(config) {
 }
 
 async function inboxTick(agents, lastReport) {
+  // 跨进程租约：没拿到（或已被别的进程接管）就别干活，否则两个收件器各投一遍 → 重复投递。
+  // 每轮都续租，这样原来的持有者退出后本进程能自动接手。
+  if (!renewLease('inbox')) return lastReport
   const config = readJson(phoneConfigPath(), null)
   const base = phoneBase(config)
   if (!base) return lastReport
@@ -1981,9 +2004,10 @@ async function inboxTick(agents, lastReport) {
     else state.lastError = ''
     // 同一条连续投不出去超过 3 次就放弃（消息还留在工作台里，模型 peer_read 仍能看到，
     // 但没有必要每 3 秒重投一遍 —— 实测同一条被重放了 15 次以上，把对端刷屏了）。
-    const giveUp = state.giveUp || {}
+    const giveUp =
+      state.giveUp && typeof state.giveUp === 'object' && !Array.isArray(state.giveUp) ? state.giveUp : {}
     for (const seq of failedSeqs) {
-      const times = (giveUp[seq] || 0) + 1
+      const times = (Number(giveUp[seq]) || 0) + 1
       if (times >= 3) {
         skipped.push(seq)
         delete giveUp[seq]
@@ -1992,12 +2016,16 @@ async function inboxTick(agents, lastReport) {
       }
     }
     for (const seq of sent) delete giveUp[seq]
+    // 和桌面侧一样只保留最近 500 条窗口内的计数，否则 inbox-state.json 随 seq 无限变长。
+    const giveUpKeep = Math.max(0, (Number(state.cursor) || 0) - 500)
+    for (const key of Object.keys(giveUp)) if (Number(key) < giveUpKeep) delete giveUp[key]
     state.giveUp = giveUp
     // blocked（目标还没开 / 对方正忙）不能无限等：等够约 5 分钟就跳过并说明。
     // 否则一条无主消息会把游标钉死，后面已成功的消息永远在游标外、每轮重投（代码审查发现）。
-    const blocked = state.blocked || {}
+    const blocked =
+      state.blocked && typeof state.blocked === 'object' && !Array.isArray(state.blocked) ? state.blocked : {}
     for (const seq of blockedSeqs) {
-      const times = (blocked[seq] || 0) + 1
+      const times = (Number(blocked[seq]) || 0) + 1
       if (times >= 100) {
         skipped.push(seq)
         delete blocked[seq]
@@ -2006,6 +2034,8 @@ async function inboxTick(agents, lastReport) {
       }
     }
     for (const seq of [...sent, ...skipped]) delete blocked[seq]
+    const blockedKeep = Math.max(0, (Number(state.cursor) || 0) - 500)
+    for (const key of Object.keys(blocked)) if (Number(key) < blockedKeep) delete blocked[key]
     state.blocked = blocked
     // 只推进到「从当前 cursor 起连续处理过」的那一段。以前取 min(failedSeqs) 当边界，
     // 分组交错时（A 组 seq 1,3 成功、B 组 seq 2 失败）会把已经投成功的 3 留在游标外，
@@ -2043,16 +2073,18 @@ function installInbox(ctx) {
   if (globalThis.__phoneBridgeInboxStarted) return
   globalThis.__phoneBridgeInboxStarted = true
   if (!acquireLease('inbox')) {
-    console.log('[phone-bridge] 另一个 DSH 进程已经在收消息了，本进程不重复起一个轮询')
-    return
+    // 原来这里直接 return：占着租约的那个进程一退出，本进程直到下次重启都不会再收
+    // 消息（手机上表现为「互联突然不工作了」）。现在轮询照起，inboxTick 每轮先
+    // renewLease，租约一空出来就自动接手；别人活着时 renewLease 失败，本轮空转。
+    console.log('[phone-bridge] 另一个 DSH 进程正在收消息，本进程先待命（它退出后自动接手）')
   }
   ctx.inject(['agents'], (scope) => {
     // 收件器出问题最难查：定时器里的错误会被吞掉，界面上只看到「消息没来」。
     // 所以启动和每次失败都留一行在 bridge 目录，出事了直接看文件。
-    const notePath = () => path.join(bridgeDir(), 'inbox-boot.log')
     const note = (text) => {
       try {
-        fs.appendFileSync(notePath(), `${new Date().toISOString()} ${text}\n`)
+        // 走 appendCappedLog：启动和每轮失败都会写一行，直接 append 会无限长（手机上尤甚）。
+        appendCappedLog('inbox-boot.log', `${new Date().toISOString()} ${text}\n`)
       } catch {}
     }
     note('收件器已启动（agents 已注入）')
@@ -3011,6 +3043,13 @@ export function apply(ctx) {
     path: '/phone-bridge/qr.svg',
     handler: async (req, res) => {
       try {
+        // 二维码里就是带 token 的配对串，和 /phone-bridge/config 同级敏感：原来这里
+        // 没做本机校验，DNS rebinding 的网页也能把它读走。没有 socket 的是进程内直接
+        // 调用（单元测试），不是真实 HTTP 请求，照常放行。
+        if (req.socket && !localOnly(req)) {
+          send(res, 403, { ok: false, error: '只允许本机访问' })
+          return
+        }
         const config = readConfig()
         const health = await probe(config.port, 1200)
         const text = health?.pairUrl || fallbackPairUrl(config)
