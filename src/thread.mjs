@@ -199,7 +199,10 @@ export function read(since = 0, limit = 200, as = '') {
   const limitNum = Number(limit)
   const cap = Number.isFinite(limitNum) && limitNum > 0 ? limitNum : 200
   const messages = visible.filter((row) => row.seq > start).slice(0, cap)
-  return { messages, next: messages.length ? messages[messages.length - 1].seq : start, total: visible.length }
+  // maxSeq 让调用方能发现「自己的游标比工作台还新」——thread.jsonl 被删/重建、
+  // 或从旧备份恢复 state 之后，filter(row.seq > start) 永远为空、两端静默断流。
+  const maxSeq = visible.length ? visible[visible.length - 1].seq : 0
+  return { messages, next: messages.length ? messages[messages.length - 1].seq : start, total: visible.length, maxSeq }
 }
 
 // Waits until somebody (not this agent) writes something this agent can see,

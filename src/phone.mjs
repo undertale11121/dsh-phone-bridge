@@ -131,8 +131,17 @@ export function loadPhoneConfig() {
 // token or pairing action is needed on reconnects.
 export function ensureIdentity() {
   const file = path.join(bridgeDir(), 'device.json')
+  const bak = `${file}.bak`
   const existing = readJson(file, null)
   if (existing?.privatePem && existing?.publicKey) return existing
+  // 主文件坏了先恢复备份：静默换身份会让电脑端不再认识这台设备，
+  // 而正常状态就是「无 token、只靠设备公钥」，换了就永久 401、只能重新配对。
+  const backup = readJson(bak, null)
+  if (backup?.privatePem && backup?.publicKey) {
+    writeJson(file, backup)
+    log('device.json 损坏，已从 device.json.bak 恢复设备身份')
+    return backup
+  }
   const { generateKeyPairSync } = nodeCrypto
   const { privateKey, publicKey } = generateKeyPairSync('ed25519')
   const privatePem = privateKey.export({ format: 'pem', type: 'pkcs8' }).toString()
@@ -144,15 +153,22 @@ export function ensureIdentity() {
     createdAt: new Date().toISOString(),
   }
   ensureDir(bridgeDir())
-  fs.writeFileSync(file, JSON.stringify(identity, null, 2), { mode: 0o600 })
-  log(`已生成本机设备密钥：${identity.id.slice(0, 8)}…`)
+  writeJson(file, identity)
+  writeJson(bak, identity)
+  log(`已生成本机设备密钥：${identity.id.slice(0, 8)}…（首次运行或身份丢失）`)
   return identity
 }
 
 
 
 export function savePhoneConfig(config) {
-  writeJson(phoneConfigPath(), config)
+  const file = phoneConfigPath()
+  try {
+    if (fs.existsSync(file)) fs.copyFileSync(file, `${file}.bak`)
+  } catch {
+    // 备份失败不影响主流程
+  }
+  writeJson(file, config)
 }
 
 export function pair(string) {
@@ -161,6 +177,9 @@ export function pair(string) {
   const config = loadPhoneConfig()
   config.url = target.url
   config.token = target.token
+  // 手工配对＝用户明确指定对端，旧的自动发现地址必须清掉：
+  // 留着会让重启后的 primary()（url !== autoUrl → false）永久不拨号。
+  config.autoUrl = ''
   config.pairedAt = new Date().toISOString()
   savePhoneConfig(config)
   return config
@@ -222,7 +241,7 @@ export class PhoneBridge {
   }
 
   get endpoint() {
-    return this.config.autoUrl || this.config.url
+    return this.config.url || this.config.autoUrl
   }
 
   get authInfo() {
@@ -267,6 +286,10 @@ export class PhoneBridge {
 
   start() {
     if (this.running) return
+    // 先停旧链路维护：authFailed 之后 this.running 被置 false，但 peer 的 setInterval
+    // 从没停过，再次 setPair 会再建一个，两个 30 秒扫描互相覆盖 lastSeen/autoUrl。
+    this.peer?.stop()
+    this.peer = null
     this.running = true
     this.loop().catch((error) => log(`连接循环退出：${explainError(error)}`))
     this.peer = ensurePeerLink({
@@ -401,10 +424,10 @@ export class PhoneBridge {
   // Single active link: the dialer we configured most recently (phases 1–2),
   // otherwise the DNS-like direction from the peer link (phase 3).
   primary() {
+    // 用户显式配对过（url 非空）就认这一个目标，不再靠 autoUrl 仲裁；
+    // 旧逻辑「url && token 且 url !== autoUrl → false」在重启后会永久不拨号。
+    if (this.config.url) return true
     const info = this.peer?.info?.()
-    if (this.config.url && this.config.token) {
-      return !this.config.autoUrl || this.config.url === this.config.autoUrl
-    }
     if (!info) return true
     return info.primary
   }
@@ -535,7 +558,9 @@ export class PhoneBridge {
         await child.start()
         this.relay = child
         child.onExit = () => {
-          this.relay = null
+          // 只清自己：scheduleRelayIdle 先置 null 再 stop()，kill 是异步的，
+          // 旧 child 的 exit 可能在新 relay 建好之后才到，无条件清会把新的抹掉。
+          if (this.relay === child) this.relay = null
         }
         return child
       } finally {
@@ -555,7 +580,10 @@ export class PhoneBridge {
     await previous
     this.relayCalls += 1
     try {
-      return await fn()
+      // 必须把 relay 传下去：install() 里写的是 withRelay(async (relay) => relay.callTool(...))，
+      // 之前不传导致第一次调用就 `Cannot read properties of undefined (reading 'callTool')`。
+      const relay = await this.ensureRelay()
+      return await fn(relay)
     } finally {
       this.relayCalls = Math.max(0, this.relayCalls - 1)
       release()
@@ -566,17 +594,15 @@ export class PhoneBridge {
   }
 
   async listTools() {
-    try {
-      const relay = await this.ensureRelay()
+    // 也要串行：desktop 派下来的 screen/tap 正在跑时不能再往同一个 relay 写请求。
+    return this.withRelay(async (relay) => {
       const tools = await relay.listTools(60_000)
       return tools.map((tool) => ({
         name: tool.name,
         description: tool.description || '',
         inputSchema: tool.inputSchema || null,
       }))
-    } finally {
-      this.scheduleRelayIdle()
-    }
+    })
   }
 
   async callTool(name, args) {

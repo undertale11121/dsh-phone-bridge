@@ -152,6 +152,15 @@ export class McpChild {
       cwd: this.cwd,
     })
     this.child = child
+    // spawn 失败（ENOENT/EACCES/ENOMEM）会发 'error' 事件，没有监听时 Node 直接
+    // 抛未捕获异常把整个桥接进程带走。这里收尸并让等待中的请求立刻失败。
+    child.on('error', (error) => {
+      for (const entry of this.pending.values()) entry.reject(error)
+      this.pending.clear()
+      if (this.child === child) this.child = null
+      this.ready = null
+      log(`子进程启动失败（${this.name}）：${error?.message || error}`)
+    })
     const rl = readline.createInterface({ input: child.stdout })
     rl.on('line', (line) => {
       const text = line.trim()
@@ -219,6 +228,14 @@ export class McpChild {
       clientInfo: { name: 'dsh-phone-bridge', version: '0.2.0' },
     }).then(() => {
       this.notify('notifications/initialized', {})
+    })
+    // 初始化失败要收尸：否则每次失败都留一个孤儿 relay.cjs 占着 RELAY_CONFIG。
+    this.ready.catch(() => {
+      try {
+        this.stop()
+      } catch {
+        /* ignore */
+      }
     })
     return this.ready
   }

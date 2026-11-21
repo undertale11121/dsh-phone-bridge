@@ -431,7 +431,14 @@ async function runAction(body) {
       const target = wake.sessionId || readActive()?.sessionId || ''
       if (!target) throw new Error('还没有模型调用过互联工具，所以不知道唤哪个会话；让电脑模型用一次 peer_info 再试')
       const result = await wakeSession(agents, target, body.text.trim(), wake.mode)
-      const state = readWakeState()
+      let state = null
+      try {
+        // 非 strict 读会把损坏/被占用的状态当空对象，紧接着整份写回 ——
+        // cursor / delivered / giveUp 全被抹成初始值，下一轮「首次对齐」静默跳过积压。
+        state = readWakeState({ strict: true })
+      } catch {
+        return { text: `已投进会话 ${shortSession(target)}…，但状态文件读不出来，这次没写回（避免把游标抹掉）` }
+      }
       state.lastWake = result
       state.lastError = ''
       writeWakeState(state)
@@ -737,6 +744,9 @@ function readWakeState({ strict = false } = {}) {
     delivered: Array.isArray(state.delivered)
       ? state.delivered.map((n) => Number(n)).filter((n) => n > 0)
       : [],
+    // blocked 的轮次计数。桌面侧以前根本没有这个字段：blockedSeqs 只声明、只 push，
+    // 从没被读取，点名会话一关就把游标永久钉死（代码审查发现）。
+    blocked: state.blocked && typeof state.blocked === 'object' ? { ...state.blocked } : {},
   }
 }
 
@@ -1173,9 +1183,11 @@ async function wakeTick(agents) {
       sessionId = pickByPinned?.id || ''
     }
     if (!sessionId) {
-      // 没有一一对应的电脑会话（这个会话没点互联开关）：**跳过这条并推进游标**。
-      // 不能一直卡着——卡住的结果是每 3 秒重投同一条，用户看到的就是刷屏。
-      state.lastError = '有手机消息没有对应的电脑会话（那个会话没开互联），已跳过'
+      // 没有一一对应的电脑会话（发消息的会话没点互联开关）。这条**投给谁都不对**，
+      // 所以跳过并推进游标 —— 但必须留下能看见的提示，否则用户永远不知道这条没送到。
+      // 不能用 blocked：结构性问题（没点开关）等 5 分钟也不会自己好，只会把后面
+      // 所有正常消息一起卡住。用户点了开关之后的新消息会正常投递。
+      state.lastError = `有第 ${Number(item.seq) || 0} 条消息没有对应的电脑会话（那个会话没开互联），已跳过；在电脑上给那个会话点「🔗 互联」后新消息才投得进去`
       skipped.push(Number(item.seq) || 0)
       continue
     }
@@ -1221,6 +1233,23 @@ async function wakeTick(agents) {
   }
   for (const seq of sentSeqs) delete giveUp[seq]
   state.giveUp = giveUp
+  // blocked（点名目标没开着 / 对方正忙）不能无限等：满 100 轮（约 5 分钟）就跳过并说明。
+  // 之前 blockedSeqs 只声明、只 push，从未被读取 —— 点名会话一关，游标就永久钉死在
+  // 那条 seq 前面；而 /thread 只拉 [cursor, cursor+200]，落后超过 200 条再触发 rotate
+  // 归档，中间那些消息既没投也没进 skipped，会成批永久丢失且不给任何信号。
+  const blocked = state.blocked && typeof state.blocked === 'object' ? { ...state.blocked } : {}
+  for (const seq of blockedSeqs) {
+    if (!(seq > 0)) continue
+    const times = (Number(blocked[seq]) || 0) + 1
+    if (times >= 100) {
+      skipped.push(seq)
+      delete blocked[seq]
+    } else {
+      blocked[seq] = times
+    }
+  }
+  for (const seq of [...sentSeqs, ...skipped]) delete blocked[seq]
+  state.blocked = blocked
   // 只推进到「从当前 cursor 起连续处理过」的那一段，理由同 inboxTick：
   // 取 min(failedSeqs) 当边界会把失败组之后已成功的消息留在游标外，下一轮重投一遍。
   const handled = new Set([...sentSeqs, ...skipped])
@@ -1580,8 +1609,17 @@ async function ensureDesktopSession(agents, live, desktopId) {
     // 错误信息可能被引擎本地化（中文「已存在」），别只认英文 ——
     // 认不出来就会 throw，上层记失败、3 次后放弃，下一轮又新建一个会话（越开越多）。
     if (/already exists|already-exists|已存在|重复创建|duplicate/i.test(message)) {
-      writeJson(peerLinksPath(), { ...readPeerLinks(), [desktopId]: id })
-      return { id, created: false }
+      // 会话文件在 ≠ 引擎里开着。文件残留但没打开时 wakeSession 必抛「没开在引擎里」，
+      // 3 轮后进 skipped → 这个电脑会话之后每条消息都丢（映射不变，永远重走这条路）。
+      if (typeof agents.get === 'function' && agents.get(id)) {
+        writeJson(peerLinksPath(), { ...readPeerLinks(), [desktopId]: id })
+        return { id, created: false }
+      }
+      const fresh = `session-${crypto.randomUUID()}`
+      await agents.create({ sessionId: fresh, meta: { cwd }, agentOptions })
+      writeJson(peerLinksPath(), { ...readPeerLinks(), [desktopId]: fresh })
+      console.log(`[phone-bridge] 旧手机会话 ${String(id).replace(/^session-/, '').slice(0, 8)} 已失效，改投新会话 ${fresh.replace(/^session-/, '').slice(0, 8)}`)
+      return { id: fresh, created: true }
     }
     throw error
   }

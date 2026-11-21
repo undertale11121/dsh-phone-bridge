@@ -539,7 +539,9 @@ class DesktopBridge {
     if (req.method === 'POST' && route === '/call') {
       const body = await readBody(req).catch(() => ({}))
       if (!this.checkAuth(body)) return sendJson(res, 401, { ok: false })
-      this.markSeen(body?.auth?.id)
+      // 只有手机用设备签名调的 /call 才算「手机来过」；本机宿主半用 token 调的 /call
+      // 每次工具执行都会发生，不能让它把 online 点亮 70 秒。
+      if (body?.auth?.k === 'device' && body?.auth?.id) this.markSeen(body.auth.id)
       try {
         // 上游（宿主半）知道「是哪个电脑会话在说话」时会把 sessionId 带下来；
         // 守卫优先用它。拿不到就传空串，由 gateMessage 按「不能误拦」处理，
@@ -646,7 +648,9 @@ class DesktopBridge {
         const since = Number(url.searchParams.get('since') || 0)
         const as = String(url.searchParams.get('as') || '')
         const wait = Math.min(Number(url.searchParams.get('wait') || 0) || 0, 55_000)
-        const data = wait > 0 ? await threadWait(as || 'phone', since, wait) : threadRead(since, 200, as)
+        // limit 之前写死 200，客户端按 limit=5 分页也照返 200 条（单次 173KB）。
+        const limit = Math.min(Math.max(Math.trunc(Number(url.searchParams.get('limit') || 0) || 200), 1), 500)
+        const data = wait > 0 ? await threadWait(as || 'phone', since, wait) : threadRead(since, limit, as)
         return sendJson(res, 200, { ok: true, ...data })
       }
       if (req.method === 'POST') {
