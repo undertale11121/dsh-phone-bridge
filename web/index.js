@@ -240,6 +240,9 @@ async function bootServer(config) {
 // controls live in the App's native panel, so the card says so instead of
 // offering desktop toggles that would mean nothing there.
 export function isPhone() {
+  // 测试钩子：Windows/macOS 上没有 /sdcard，测试想覆盖手机侧收件器
+  // （inboxTick / 预建手机会话 / 标题回写）只能靠它。生产环境不会设这个变量。
+  if (process.env.PHONE_BRIDGE_TEST_FORCE_PHONE === '1') return true
   // /sdcard 是 Android 独有的，比环境变量可靠。PHONE_BRIDGE_ROLE 只在证据
   // 站得住时才算数：桌面上万一有人设了 ROLE=phone，不能因此把两个方向都
   // 判成手机端（那样就没有唤醒器，消息没人取）。
@@ -1775,7 +1778,15 @@ function writeSessionTitle(sessionId, title) {
   if (!sessionId || !name) return false
   try {
     const file = path.join(dshHome(), 'storages', 'session_projcache', 'sessions', `${sessionId}.json`)
-    if (!fs.existsSync(file)) return false
+    // 会话刚 agents.create 出来时，引擎还没来得及写 projcache 文件（实测这一步有
+    // 几百毫秒的延迟）。原来这里直接 return false，于是新建的手机会话永远没有标题，
+    // App 列表里就是一条看不见的空白条目 —— 用户说的「新建的对话不出现」。
+    // 文件不在就先落一个最小结构，引擎之后写自己的行时会把 title 一起带上。
+    if (!fs.existsSync(file)) {
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, JSON.stringify({ record: { rows: { title: { ver: 1, seq: 1, val: name } } } }))
+      return true
+    }
     const data = JSON.parse(fs.readFileSync(file, 'utf8'))
     const rows = data && data.record ? data.record.rows : null
     if (!rows || typeof rows !== 'object') return false
