@@ -100,16 +100,37 @@ function ensurePhoneProfileRegistered() {
 }
 
 function takeFlag(name) {
-  const index = rest.indexOf(name)
+  // 支持 `--port 8787` 和 `--port=8787`；缺值时报错而不是悄悄当成 '1'
+  // （以前 `--port` 后面没值时会把端口设成 1，非 root 下 EACCES，桥接连不上还没提示）。
+  const index = rest.findIndex((item) => item === name || item.startsWith(`${name}=`))
   if (index < 0) return null
+  const token = rest[index]
+  if (token.startsWith(`${name}=`)) {
+    rest.splice(index, 1)
+    const inline = token.slice(name.length + 1).trim()
+    if (!inline) throw new Error(`${name} 需要一个值`)
+    return inline
+  }
   const value = rest[index + 1]
-  rest.splice(index, value && !value.startsWith('--') ? 2 : 1)
-  return value && !value.startsWith('--') ? value : '1'
+  if (value === undefined || value.startsWith('--')) {
+    rest.splice(index, 1)
+    throw new Error(`${name} 需要一个值（例如 ${name} 8787）`)
+  }
+  rest.splice(index, 2)
+  return value
 }
 
 async function main() {
-  const port = takeFlag('--port')
-  const host = takeFlag('--host')
+  let port = null
+  let host = null
+  try {
+    port = takeFlag('--port')
+    host = takeFlag('--host')
+  } catch (error) {
+    console.error(String(error?.message || error))
+    process.exitCode = 2
+    return
+  }
   if (port) process.env.PHONE_BRIDGE_PORT = port
   if (host) process.env.PHONE_BRIDGE_HOST = host
 
@@ -165,10 +186,21 @@ async function main() {
     case 'print-pair': {
       const config = loadDesktopConfig()
       const { lanAddresses, pairStringTo } = await import('./src/util.mjs')
-      for (const item of lanAddresses()) console.log(pairStringTo(item.address, config.port, config.token))
+      const list = lanAddresses()
+      if (!list.length) {
+        console.error('没找到局域网地址：先确认电脑已联网，或直接用配置页里的配对串。')
+        process.exitCode = 1
+        return
+      }
+      for (const item of list) console.log(pairStringTo(item.address, config.port, config.token))
       return
     }
     case undefined:
+      // 被 MCP 客户端 spawn 但配置里漏了 `auto`：stdout 是 MCP 协议通道，
+      // 往里打用法会直接破坏分帧，客户端只看到「工具不可用」。
+      console.error(`缺少子命令（MCP 配置的 args 里应该有 auto）。\n\n${USAGE}`)
+      process.exitCode = 2
+      return
     case '-h':
     case '--help':
     case 'help':
@@ -183,7 +215,9 @@ async function main() {
 export function detectRole() {
   const relay = process.env.PHONE_BRIDGE_RELAY || '/opt/dsh-app/phone/relay.cjs'
   const relayConfig = process.env.PHONE_BRIDGE_RELAY_CONFIG || '/var/lib/dsh-app/phone/bridge.json'
-  if (fs.existsSync(relay) || fs.existsSync(relayConfig) || fs.existsSync('/sdcard')) return 'phone'
+  // 光有 /sdcard 不够：桌面 Linux 也可能挂着 /sdcard，会把自己误判成手机端。
+  const android = fs.existsSync('/system/build.prop') || fs.existsSync('/system/bin/app_process') || fs.existsSync('/system/bin/app_process64')
+  if (fs.existsSync(relay) || fs.existsSync(relayConfig) || (android && fs.existsSync('/sdcard'))) return 'phone'
   return 'desktop'
 }
 

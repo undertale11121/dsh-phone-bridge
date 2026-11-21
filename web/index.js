@@ -517,6 +517,13 @@ async function runAction(body) {
       wake.enabled = true
       config.wake = wake
       changes.wake = wake
+    } else if (body.desktopSessionId === '') {
+      // 解绑电脑会话时唤醒器必须一起熄：留着会把消息投给一个已经不互联的会话。
+      const wake = readWake(config)
+      wake.sessionId = ''
+      wake.enabled = false
+      config.wake = wake
+      changes.wake = wake
     }
     patchConfig(changes)
     const parts = []
@@ -1481,14 +1488,25 @@ async function bridgeGet(base, pathname, token, timeoutMs = 8000) {
   return await res.json()
 }
 
-async function bridgePost(base, pathname, token, payload, timeoutMs = 8000) {
+async function bridgePost(base, pathname, token, payload, timeoutMs = 8000, signal = null) {
+  const timeout = AbortSignal.timeout(timeoutMs)
   const res = await fetch(`${base}${pathname}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ auth: deviceAuth() || { k: 'token', token }, ...payload }),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
   })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  if (!res.ok) {
+    // 桥接把「不认识这个操作」「守卫为什么拦」写在 body 里，丢掉它只能说 HTTP 400。
+    let detail = ''
+    try {
+      const body = await res.json()
+      detail = String(body?.error || body?.text || '')
+    } catch {
+      /* body 不是 JSON 就算了 */
+    }
+    throw new Error(detail ? `HTTP ${res.status}：${detail}` : `HTTP ${res.status}`)
+  }
   return await res.json()
 }
 
@@ -2514,7 +2532,7 @@ const HOST_TOOLS = [
 // 的 toolTimeoutMs 对齐，不能用面板那 8 秒。
 const hostToolTimeoutMs = () => Number(readConfig().toolTimeoutMs) || 1800000
 
-async function callBridgeTool(name, args, sessionId) {
+async function callBridgeTool(name, args, sessionId, signal = null) {
   const config = readConfig()
   const timeoutMs = hostToolTimeoutMs()
   let out
@@ -2531,6 +2549,7 @@ async function callBridgeTool(name, args, sessionId) {
       },
       // HTTP 比工具本身多给 15 秒：让工具自己的超时先生效，错误信息更具体。
       timeoutMs + 15_000,
+      signal,
     )
   } catch (error) {
     throw new Error(`桥接服务没在跑：${error?.message || error}`)
@@ -2597,7 +2616,7 @@ async function registerHostTools(service) {
         async execute(args, exec) {
           // 这一行就是这一层存在的理由：MCP 给不了，宿主给得了。
           const sessionId = String(exec?.agent?.session?.id || exec?.agent?.id || '')
-          const result = await callBridgeTool(spec.name, args, sessionId)
+          const result = await callBridgeTool(spec.name, args, sessionId, exec?.signal || null)
           const text = String(result?.text ?? '')
           const images = Array.isArray(result?.images) ? result.images.length : 0
           // 截图这条链路暂时带不过来（宿主工具的 render 只回文本），如实说一声，

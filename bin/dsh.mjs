@@ -7,9 +7,22 @@
 // 用法：node bin/dsh.mjs headless --patch x.yml --json "任务"
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
+import path from 'node:path'
 
-const ELECTRON = process.env.DSH_ELECTRON || 'D:\\c\\DEEPSEEK\\DeepSeek Harness.exe'
-const ASAR_BIN = process.env.DSH_ASAR_BIN || 'D:\\c\\DEEPSEEK\\resources\\app.asar\\dsh\\node_modules\\@deepseek-ai\\dsh\\lib\\bin.js'
+// 不硬编码安装位置：别的机器/盘符一换就 127，而这是桌面子智能体的唯一入口。
+function deriveElectron() {
+  if (process.env.DSH_ELECTRON) return process.env.DSH_ELECTRON
+  if (process.versions.electron) return process.execPath
+  if (/DeepSeek Harness\.exe$/i.test(process.execPath)) return process.execPath
+  return 'D:\\c\\DEEPSEEK\\DeepSeek Harness.exe'
+}
+function deriveAsarBin(electron) {
+  if (process.env.DSH_ASAR_BIN) return process.env.DSH_ASAR_BIN
+  return path.join(path.dirname(electron), 'resources', 'app.asar', 'dsh', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js')
+}
+
+const ELECTRON = deriveElectron()
+const ASAR_BIN = deriveAsarBin(ELECTRON)
 
 if (!fs.existsSync(ELECTRON)) {
   console.error(`找不到 DSH Desktop 的可执行文件：${ELECTRON}（用 DSH_ELECTRON 指定）`)
