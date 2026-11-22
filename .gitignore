@@ -52,3 +52,4 @@ host-tools.log
 .s.py
 .insp.py
 .curfix.py
+nohup.out
