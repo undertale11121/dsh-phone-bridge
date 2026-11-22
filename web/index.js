@@ -924,7 +924,56 @@ export async function wakeSession(agents, sessionId, text, mode = 'queue', optio
   return { sessionId, mode: mode === 'steer' ? 'steer' : 'queue', preview: String(text).slice(0, 120), at: new Date().toISOString() }
 }
 
+// 工作台就是本机的 thread.jsonl。宿主半和桥接在同一台机器上，没必要再走
+// http://127.0.0.1:<port>/thread —— 那个端口可能被别的进程抢占（实测 8080 被 DSH
+// 内部服务占过，回环请求直接 404，于是 wakeTick 每轮都记「工作台读不到」，
+// 一条消息都投不出去）。直接读文件既快又不受端口影响。
+function visibleToViewer(row, viewer) {
+  const to = String(row?.to || 'all')
+  if (to === 'all') return true
+  if (to === viewer) return true
+  return to.startsWith(viewer + ':')
+}
+
+function threadFileFromDisk(query) {
+  const params = new URLSearchParams(String(query || ''))
+  const since = Number(params.get('since')) || 0
+  const limit = Math.min(Math.max(Number(params.get('limit')) || 50, 1), 500)
+  const viewer = String(params.get('as') || 'desktop')
+  const file = path.join(bridgeDir(), 'thread.jsonl')
+  let text = ''
+  try {
+    text = fs.readFileSync(file, 'utf8')
+  } catch {
+    return null
+  }
+  const rows = text
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line)
+      } catch {
+        return null
+      }
+    })
+    .filter((row) => row && typeof row.text === 'string')
+    .filter((row) => Number(row.seq) > since)
+    .filter((row) => visibleToViewer(row, viewer))
+    .sort((a, b) => Number(a.seq) - Number(b.seq))
+  const page = rows.slice(0, limit)
+  return {
+    ok: true,
+    messages: page,
+    next: page.length ? Number(page[page.length - 1].seq) : since,
+    total: page.length,
+  }
+}
+
 async function threadPath(config, query) {
+  const local = threadFileFromDisk(query)
+  if (local) return local
+  // 兜底：真的读不到文件时再走 HTTP（例如将来被拆到别的主机上）。
   const auth = Buffer.from(JSON.stringify({ k: 'token', token: config?.token })).toString('base64url')
   const res = await fetch(`http://127.0.0.1:${config.port}/thread?${query}&auth=${auth}`, {
     signal: AbortSignal.timeout(2500),
