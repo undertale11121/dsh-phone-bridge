@@ -2224,6 +2224,13 @@ async function inboxTick(agents, lastReport) {
         target = want ? matchSession(live, want) : fallback
       }
       if (!target) {
+        if (!src && !want) {
+          // 既没点名、也没带来源电脑会话的「给手机」消息（例如电脑侧 peer_say 发出来的
+          // to:'phone'）：手机上没有任何依据判断该投给哪个会话，不猜。但绝不能让它把
+          // 游标钉死 —— 记 skipped 让游标过去，消息仍留在工作台里可被 peer_read 看到。
+          for (const item of rows) skipped.push(Number(item.seq) || 0)
+          continue
+        }
         misses.push(want)
         // 找不到目标 ≠ 投递失败：目标可能过一会儿就开了。绝不能进 failedSeqs ——
         // 那条路会「连续 3 次放弃 → skip → 游标越过」，消息就永久丢了。
