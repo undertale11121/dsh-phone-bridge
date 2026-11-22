@@ -1167,7 +1167,13 @@ async function fulfilPendingSession() {
   try {
     const name = String(pending.phoneName || '')
       || String(((readAgents() || []).find((row) => row && row.id === `psess:${pending.phoneId}`) || {}).name || '')
-    if (name) writeSessionTitle(id, name)
+    if (name) {
+      // 引擎是异步落盘 projcache 的：我们立刻写一次会被它覆盖成默认名，
+      // 所以隔 1.5s / 4s 再各补写一次，直到盖住它自己那一版。
+      writeSessionTitle(id, name)
+      setTimeout(() => { try { writeSessionTitle(id, name) } catch {} }, 1500)
+      setTimeout(() => { try { writeSessionTitle(id, name) } catch {} }, 4000)
+    }
   } catch {}
   // 两边都要亮：手机端那颗开关靠这个会话出现在 links 里，电脑端靠 desktopSessionId。
   patchConfig({
