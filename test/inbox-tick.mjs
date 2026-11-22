@@ -142,6 +142,13 @@ await sleep(10000)
 check('收件器真的跑了（拉过 /collab）', collabHits > 0, `hits=${collabHits}`)
 check('预建调用了 agents.create', created.length >= 2, `created=${created.length}`)
 check('新建的会话都带 cwd', created.every((c) => c.meta && typeof c.meta.cwd === 'string' && c.meta.cwd.length > 0), JSON.stringify(created[0]?.meta || {}))
+// 引擎只在 create 那一刻读 meta.title，之后改 projcache 会被整份覆盖（试过三种写法都不行），
+// 所以标题必须在这里就传进去，否则手机 App 列表里就是一条空白条目。
+check(
+  '新建的会话都带上了电脑会话的标题',
+  created.length > 0 && created.every((c) => c.meta && typeof c.meta.title === 'string' && c.meta.title.length > 0),
+  JSON.stringify(created.map((c) => c.meta?.title || '')),
+)
 
 const peerLinksFile = path.join(BRIDGE, 'peer-links.json')
 const peerLinks = fs.existsSync(peerLinksFile) ? JSON.parse(fs.readFileSync(peerLinksFile, 'utf8')) : {}

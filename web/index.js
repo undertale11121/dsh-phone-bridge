@@ -1154,9 +1154,13 @@ async function fulfilPendingSession() {
   const config = readConfig()
   const pending = config.pendingNewSession
   if (!pending || !pending.phoneId) return null
+  // 标题必须先算出来再建会话：引擎只在 create 那一刻看 meta.title，
+  // 之后再改 projcache 会被它整份覆盖（试过 seq+1 / seq+1000 / titleInput，全部无效）。
+  const pendingName = String(pending.phoneName || '')
+    || String(((readAgents() || []).find((row) => row && row.id === `psess:${pending.phoneId}`) || {}).name || '')
   let id = ''
   try {
-    id = await createFreshSession(String(config.pendingNewSession?.phoneName || ''))
+    id = await createFreshSession(pendingName)
   } catch (error) {
     console.error(`[phone-bridge] 自动新开会话失败：${error?.message || error}`)
     return null
@@ -1167,8 +1171,7 @@ async function fulfilPendingSession() {
   // 新会话要有标题，否则手机 App 的列表里又是一条空白条目（用户反复报的就是这个）。
   // 标题取手机上报过的 psess:<phoneId> 的 name；拿不到就让引擎用默认名，别硬编。
   try {
-    const name = String(pending.phoneName || '')
-      || String(((readAgents() || []).find((row) => row && row.id === `psess:${pending.phoneId}`) || {}).name || '')
+    const name = pendingName
     if (name) {
       // 引擎是异步落盘 projcache 的：我们立刻写一次会被它覆盖成默认名，
       // 所以隔 1.5s / 4s 再各补写一次，直到盖住它自己那一版。
@@ -1911,7 +1914,7 @@ async function ensureDesktopSession(agents, live, desktopId, title = '') {
   const agentOptions = defaultModel() || {}
   let created = id
   try {
-    await agents.create({ sessionId: id, meta: { cwd }, agentOptions })
+    await agents.create({ sessionId: id, meta: { cwd, title: String(title || '') }, agentOptions })
   } catch (error) {
     const message = String(error?.message || error)
     // 会话文件已经在了（上次建过、现在没打开）。**绝不能重建** —— 重建会让每一轮轮询
@@ -1929,7 +1932,7 @@ async function ensureDesktopSession(agents, live, desktopId, title = '') {
       }
       const fresh = `session-${crypto.randomUUID()}`
       try {
-        await agents.create({ sessionId: fresh, meta: { cwd }, agentOptions })
+        await agents.create({ sessionId: fresh, meta: { cwd, title: String(title || '') }, agentOptions })
       } catch (again) {
         const why = String(again?.message || again)
         if (/agent factory|no agent|不支持自动新开/i.test(why)) {
