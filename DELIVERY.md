@@ -42,4 +42,4 @@
 npm run test:all
 ```
 
-13 个文件、222 条断言：`web 65 / links 14 / gate 14 / thread 17 / delivery-stress 17 / e2e 7 / agents 19 / pair 5 / auth 11 / qr 15 / auto 9 / rotate 6 / inbox-tick 12`。
+15 个文件、约 222 条断言：`auth 11 / gate 14 / gate-phone 8 / web 65 / rotate 6 / render / auto 9 / pair 5 / qr 15 / links 14 / thread 17 / e2e 7 / agents 19 / delivery-stress 17 / inbox-tick 12`。
