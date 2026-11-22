@@ -1135,14 +1135,16 @@ export function defaultModel() {
 // DSH 不许插件凭空建会话，但宿主进程里有 agents.create（AgentLoop 的工厂）。
 // 两个坑：① 不给 meta.cwd 会落到 _no-cwd，App 打开就是「同步中断」；
 // ② 不给 agentOptions.provider/model 会报「has no provider/model」，一跑就出错。
-async function createFreshSession() {
+async function createFreshSession(title = '') {
   const agents = agentsRef
   if (!agents || typeof agents.create !== 'function') {
     throw new Error('这台电脑上的 DSH 不支持自动新开会话（agents.create 不可用）')
   }
   const id = `session-${crypto.randomUUID()}`
   const agentOptions = defaultModel() || {}
-  await agents.create({ sessionId: id, meta: { cwd: process.cwd() }, agentOptions })
+  // 引擎的 title 是从首条消息（titleInput.first.text）截出来的，create 本身没有
+  // title 参数。meta 里塞一个 title 试试它认不认；不认也不影响建会话。
+  await agents.create({ sessionId: id, meta: { cwd: process.cwd(), title: String(title || '') }, agentOptions })
   return id
 }
 
@@ -1154,7 +1156,7 @@ async function fulfilPendingSession() {
   if (!pending || !pending.phoneId) return null
   let id = ''
   try {
-    id = await createFreshSession()
+    id = await createFreshSession(String(config.pendingNewSession?.phoneName || ''))
   } catch (error) {
     console.error(`[phone-bridge] 自动新开会话失败：${error?.message || error}`)
     return null
@@ -1873,7 +1875,17 @@ function writeSessionTitle(sessionId, title) {
     if (!rows || typeof rows !== 'object') return false
     const prev = rows.title
     if (prev && String(prev.val || '') === name) return false
-    rows.title = { ver: (prev && prev.ver) || 1, seq: ((prev && prev.seq) || 0) + 1, val: name }
+    // title 是引擎从 titleInput 生成的（= 首条消息前 20 字）。只改 title 会在引擎
+    // 下一次保存时被整份覆盖，所以两处都写：title 给界面立刻显示，titleInput 让
+    // 引擎之后重新生成时也是这个名字。
+    rows.title = { ver: (prev && prev.ver) || 1, seq: ((prev && prev.seq) || 0) + 1000, val: name }
+    const input = rows.titleInput
+    const first = input && input.val && typeof input.val === 'object' ? input.val.first : null
+    rows.titleInput = {
+      ver: (input && input.ver) || 3,
+      seq: ((input && input.seq) || 0) + 1000,
+      val: { ...(input && input.val && typeof input.val === 'object' ? input.val : {}), first: { seq: (first && first.seq) || 1, text: name } },
+    }
     fs.writeFileSync(file, JSON.stringify(data))
     return true
   } catch {

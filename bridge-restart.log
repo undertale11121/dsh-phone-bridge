@@ -1,0 +1,37 @@
+[phone-bridge] 2026-11-22T02:16:00.653Z 桌面端桥接已监听 0.0.0.0:8090
+[phone-bridge] 2026-11-22T02:16:00.668Z 配对串（发到手机对话）：dshphone://192.168.1.10:8090/1fef9e7233821b11967f5b9d9b45a416
+[phone-bridge] 2026-11-22T02:16:00.669Z 配置页：http://127.0.0.1:8789/
+[phone-bridge] 2026-11-22T02:16:00.671Z 配置页：http://127.0.0.1:8789/
+[phone-bridge] 2026-11-22T02:16:20.815Z 自动新开的会话 session-5c50… 已命名为「标题继承验证会话」
+[phone-bridge] 2026-11-22T02:16:49.245Z 桌面端桥接已监听 0.0.0.0:8090
+[phone-bridge] 2026-11-22T02:16:49.258Z 配对串（发到手机对话）：dshphone://192.168.1.10:8090/1fef9e7233821b11967f5b9d9b45a416
+[phone-bridge] 2026-11-22T02:16:49.260Z 配置页：http://127.0.0.1:8789/
+[phone-bridge] 2026-11-22T02:16:49.262Z 配置页：http://127.0.0.1:8789/
+[phone-bridge] 2026-11-22T02:17:01.350Z 自动新开的会话 session-429f… 已命名为「标题基线修复验证」
+[phone-bridge] 2026-11-22T02:17:24.877Z 桌面端桥接已监听 0.0.0.0:8090
+[phone-bridge] 2026-11-22T02:17:24.891Z 配对串（发到手机对话）：dshphone://192.168.1.10:8090/1fef9e7233821b11967f5b9d9b45a416
+[phone-bridge] 2026-11-22T02:17:24.891Z 配置页：http://127.0.0.1:8789/
+[phone-bridge] 2026-11-22T02:17:24.893Z 配置页：http://127.0.0.1:8789/
+[phone-bridge] 2026-11-22T02:17:37.995Z 自动新开的会话 session-fe1a… 已命名为「最终标题验证会话」
+[phone-bridge] 2026-11-22T02:19:09.407Z 桌面端桥接已监听 0.0.0.0:8090
+[phone-bridge] 2026-11-22T02:19:09.420Z 配对串（发到手机对话）：dshphone://192.168.1.10:8090/1fef9e7233821b11967f5b9d9b45a416
+[phone-bridge] 2026-11-22T02:19:09.420Z 配置页：http://127.0.0.1:8789/
+[phone-bridge] 2026-11-22T02:19:09.422Z 配置页：http://127.0.0.1:8789/
+[phone-bridge] 2026-11-22T02:19:20.494Z 自动新开的会话 session-9172… 已命名为「LWW标题验证」
+[phone-bridge] 2026-11-22T02:20:32.500Z 失败：Error: 端口 8090..8109 都被占用了
+    at DesktopBridge.start (file:///C:/Users/17735/.dsh/phone-bridge/src/desktop.mjs:425:11)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async runDesktopMcp (file:///C:/Users/17735/.dsh/phone-bridge/src/desktop.mjs:1711:16)
+    at async main (file:///C:/Users/17735/.dsh/phone-bridge/bridge.mjs:175:18)
+端口 8090..8109 都被占用了
+[phone-bridge] 2026-11-22T02:21:12.556Z 失败：Error: 端口 8090..8109 都被占用了
+    at DesktopBridge.start (file:///C:/Users/17735/.dsh/phone-bridge/src/desktop.mjs:425:11)
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+    at async runDesktopMcp (file:///C:/Users/17735/.dsh/phone-bridge/src/desktop.mjs:1711:16)
+    at async main (file:///C:/Users/17735/.dsh/phone-bridge/bridge.mjs:175:18)
+端口 8090..8109 都被占用了
+[phone-bridge] 2026-11-22T02:21:55.410Z 桌面端桥接已监听 0.0.0.0:8090
+[phone-bridge] 2026-11-22T02:21:55.424Z 配对串（发到手机对话）：dshphone://192.168.1.10:8090/1fef9e7233821b11967f5b9d9b45a416
+[phone-bridge] 2026-11-22T02:21:55.425Z 配置页：http://127.0.0.1:8789/
+[phone-bridge] 2026-11-22T02:21:55.427Z 配置页：http://127.0.0.1:8789/
+[phone-bridge] 2026-11-22T02:22:35.790Z 自动新开的会话 session-1c30… 已命名为「干净重启后标题验证」

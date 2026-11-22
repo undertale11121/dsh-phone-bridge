@@ -668,6 +668,7 @@ class DesktopBridge {
           // 绝不猜「电脑上最近开着的那个」——那会把不同手机会话串到同一个电脑会话
           // （用户要的是一一对应）。便签交给宿主半兑现（fulfilPendingSession）。
           patchDesktopConfig({ pendingNewSession: { phoneId, phoneName: String(body?.phoneName || '').trim(), at: new Date().toISOString() } })
+          notePendingTitle(body?.phoneName)
           return sendJson(res, 200, {
             ok: true,
             pending: true,
@@ -678,6 +679,7 @@ class DesktopBridge {
           // 用户 m04603：手机上点开互联、电脑上却一个会话都没开 —— 别报错，
           // 留张便签给宿主半，让它开一个新会话再接上。
           patchDesktopConfig({ pendingNewSession: { phoneId, phoneName: String(body?.phoneName || '').trim(), at: new Date().toISOString() } })
+          notePendingTitle(body?.phoneName)
           return sendJson(res, 200, { ok: true, pending: true, text: '电脑上没有开着的会话，正在给你开一个新的…' })
         }
         if (body?.off) delete links[key]
@@ -2674,3 +2676,77 @@ export async function runDesktopServer() {
   // 必须和正常入口共用同一套 handlers，否则宿主半调工具会报「不认识的操作」。
   return runDesktopMcp({ mcp: false })
 }
+
+// ── 自动新开会话的标题补写 ──────────────────────────────────────────────
+// 引擎 createFreshSession 之后是异步落盘 projcache 的，宿主半（web/index.js）
+// 立刻写进去的标题会被引擎自己那版盖掉（实测新会话 title 恒为 None）。
+// 桥接进程这边盯住 desktop.json 的 collab.desktopSessionId：等它换到一个新 id
+// 并稳定一轮之后，把 pendingTitle 里的名字写进 projcache。
+let pendingTitle = { name: '', baseline: '', id: '', since: 0 }
+function notePendingTitle(name) {
+  const value = String(name || '').trim()
+  if (!value) return
+  // 记下「派活时」的 desktopSessionId 作为基线：等它换掉才是新会话。
+  // 不记的话，轮询第一次看到的还是上一次那个会话，名字会被写到旧会话头上。
+  let baseline = ''
+  try {
+    baseline = String(readJson(desktopConfigPath(), {})?.collab?.desktopSessionId || '')
+  } catch {}
+  pendingTitle = { name: value, baseline, id: '', since: Date.now() }
+}
+function applyPendingTitle() {
+  if (!pendingTitle.name) return
+  if (Date.now() - pendingTitle.since < 800) return
+  let cfg
+  try {
+    cfg = readJson(desktopConfigPath(), {})
+  } catch {
+    return
+  }
+  const id = String(cfg?.collab?.desktopSessionId || '')
+  if (!id) return
+  if (id === pendingTitle.baseline) return
+  if (pendingTitle.id !== id) {
+    pendingTitle.id = id
+    return
+  }
+  try {
+    const file = path.join(dshHome(), 'storages', 'session_projcache', 'sessions', `${id}.json`)
+    const meta = readJson(file, null)
+    if (!meta) return
+    if (!meta.record || typeof meta.record !== 'object') meta.record = {}
+    if (!meta.record.rows || typeof meta.record.rows !== 'object') meta.record.rows = {}
+    const title = meta.record.rows.title || {}
+    if (String(title.val || '') === pendingTitle.name) {
+      pendingTitle = { name: '', baseline: '', id: '', since: 0 }
+      return
+    }
+    // title 是引擎从 titleInput 生成的；只改 title 会被引擎整份覆盖，两处都写。
+    meta.record.rows.title = { ver: Number(title.ver) || 1, seq: (Number(title.seq) || 0) + 1000, val: pendingTitle.name }
+    {
+      const input = meta.record.rows.titleInput
+      const first = input && input.val && typeof input.val === 'object' ? input.val.first : null
+      meta.record.rows.titleInput = {
+        ver: (input && input.ver) || 3,
+        seq: ((input && input.seq) || 0) + 1000,
+        val: { ...(input && input.val && typeof input.val === 'object' ? input.val : {}), first: { seq: (first && first.seq) || 1, text: pendingTitle.name } },
+      }
+    }
+    writeJson(file, meta)
+    // 引擎可能还在异步落盘，写完要读回来确认；被它盖掉就下轮继续重试（最多 20 轮）。
+    let confirmed = false
+    try {
+      const check = readJson(file, null)
+      confirmed = String((((check || {}).record || {}).rows || {}).title?.val || '') === pendingTitle.name
+    } catch {}
+    pendingTitle.tries = (Number(pendingTitle.tries) || 0) + 1
+    if (confirmed) {
+      log(`自动新开的会话 ${id.slice(0, 12)}… 已命名为「${pendingTitle.name}」`)
+      pendingTitle = { name: '', baseline: '', id: '', since: 0 }
+    } else if (pendingTitle.tries >= 20) {
+      log(`自动新开的会话 ${id.slice(0, 12)}… 改名被引擎覆盖 20 次，放弃`)
+      pendingTitle = { name: '', baseline: '', id: '', since: 0 }
+    }
+  } catch {}
+}
+setInterval(applyPendingTitle, 1000).unref?.()
