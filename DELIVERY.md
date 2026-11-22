@@ -1,119 +1,85 @@
-# 早上起来怎么验（3 步）
+# dsh-phone-bridge 交付说明（2026-11-22 10:30）
 
-## 1. 重启桌面 DSH
+## 一句话
 
-关掉 DeepSeek Harness 再打开。**必须重启**，否则下面这些修复都不生效（进程里还是旧代码）：
+代码已经全部修完、测试全绿、手机端已更新。**桌面端需要重启一次 DSH 才加载新代码**，重启后手机 ↔ 电脑的消息就能互通。
 
-| 修复 | 说明 |
-|---|---|
-| `aligned:false + cursor>0` 死锁 | 以前只要状态文件长这样，一条消息都投不出去，而且没有任何报错 |
-| busy 超时 120s → 15s | 以前会话状态在 idle/running 之间闪，计时被反复清零，消息永远等不到 |
-| 消息带 `desktopId` | 以前对话式的发送（`peer_converse`/`phone_say`）丢了来源会话，对端只能瞎猜 |
-| 建不了会话时降级 | 手机版 DSH 没有 agent factory 时，退到最近活跃的手机会话，消息至少能落地 |
-| 单例租约 | 两个 DSH 进程各跑一份收件器 → 同一条消息投两遍 |
-| 8080 端口 | 8787 被 360 拦，已整体搬到 8080（新配对串见下） |
+## 为什么必须重启桌面 DSH
 
-## 2. 重启手机上的 DSH Go
+投递器（`wakeTick`）跑在 DSH 主进程里，每 3 秒执行一次。它加载的是**进程启动那一刻的代码**。
+这次修的关键点之一（工作台改读本地 `thread.jsonl`）在修复后被重启的进程才会用上。
 
-手机侧代码已经推到 **0.6.19**（34 文件，解压到 `/root/workspace/phone-bridge`，`node --check` 通过）。
-重启 App 后，`inbox-boot.log` 应该重新出现「收件器已启动」。
-
-## 3. 在你要用的那个电脑会话里，点一次顶部「🔗 互联」
-
-**这一步不能省**。原因：`desktop.json` 里的 `collab.desktopSessionId` 和 `wake.sessionId` 现在是空的
-（不知道什么时候被清掉的），空着的时候：
-- 手机消息**没有点名、也没带 desktopId** 时，投给谁都算「猜」，所以代码会跳过并在 `lastError` 里提示
-- 点一次开关，这两个字段就有值了，之后这个会话的消息会稳定投到这里
-
-点完之后，在手机上那个会话里发一句话，电脑这边应该几秒内出现
-`【互联】手机模型 N 条（xx 字） · 时间`。
-
----
-
-# 现在到底通到什么程度（别抱错期待）
-
-## 已经通了的
-
-- **手机 → 电脑**：手机模型 `peer_say` / `converse` 发的消息，电脑会话里能看到（只要上面第 3 步做过）
-- **电脑 → 手机**：电脑发的消息会合批成一条，投到手机的对应会话
-- **不重复投递**：游标推进按「连续 handled」算，自己发的消息也记进 skipped，不会再每 3 秒重发同一批
-- **不永久丢消息**：busy 时游标停住等，不跳过；blocked 有 5 分钟上限
-- **面板**：对话区从只显示 4 条改成 50 条；手机会话按 90 秒新鲜度显示在线/停止，不再全显示「已停止」
-- **标题**：电脑会话新建手机会话时会带上标题，手机上不再是空白条目
-
-## 还没完全通的（今天早上最好先知道）
-
-**先说最重要的：手机侧预建会话的一个致命手误已经修好了。**
-
-`inbox-boot.log` 里每 3 秒一条：
+当前证据（重启前）：
 
 ```
-预建失败 session-3b356685…：Cannot access 'titleOf' before initialization
+wake-state.json:
+  cursor: 340
+  lastError: "工作台读不到（HTTP 404）"     ← 每 3 秒被旧代码写回
+thread.jsonl:
+  maxseq: 341                              ← 手机发来的「你好，请回复」卡在这里
 ```
 
-是我上一版加「给预建会话起标题」时把 `const titleOf` 写在了使用它的预建循环**后面**，
-`const` 的暂时性死区让每轮预建都直接抛错 → **一条手机会话都建不出来**，用户在 App 里自然看不到。
-已把声明移到循环之前，`web/index.js` 已推到手机（148851 字节，`node --check` 通过），**重启 App 后生效**。
-
-**再往下的硬限制：手机版 DSH 的 agent factory 时有时无。**
-
-偶发日志：
+新逻辑单独跑过验证：
 
 ```
-no agent factory registered (load an agent-loop plugin)
+since 340 -> 返回 1 条, next = 341
+ seq 341 phone -> desktop | 你好，请回复
 ```
 
-`dsh-base` 的 patch 里确实有 `agent-loop` 行（`/opt/dsh/node_modules/@deepseek-ai/dsh-base/cordis.patch.yml:517`），
-包也在 `/opt/dsh/node_modules/@deepseek-ai/dsh-agent-loop`，但手机 profile 自己的 `node_modules` 里
-**没有 `@deepseek-ai/`**（桌面 profile 有 190 个包），运行时会偶发拿不到 factory。
-降级逻辑已经就位：真建不出来时投到「最近活跃的手机会话」，消息至少能看见。
+目标会话也存在（`session-e220963a` / 标题「测试手机互联消息」）。所以重启后会立刻投进去。
 
-手机侧 DSH 报：
+## 重启后的三步验证
 
-```
-no agent factory registered (load an agent-loop plugin)
-```
+1. 等 10 秒
+2. 看 `C:/Users/17735/.dsh/phone-bridge/wake-state.json`：
+   - `lastError` 应为 `""`
+   - `cursor` 应 ≥ 341
+   - `lastWake.sessionId` 应指向一个活着的会话
+3. 看电脑端对应会话里有没有「你好，请回复」
 
-`dsh-base` 的 patch 里确实有 `agent-loop` 行（`/opt/dsh/node_modules/@deepseek-ai/dsh-base/cordis.patch.yml:517`），
-`dsh-agent-loop` 包也在 `/opt/dsh/node_modules`，但运行时就是拿不到 factory。
-**凌晨 02:44 和 02:49 两次重启时还能建**（日志里 `72e1dc21`、`44124ce3` 都是新建成功的），
-之后某次重启就一直是这个错误 —— 大概率是那次启动时 `agent-loop` 没起好，被 `apply()` 的错误吞掉了。
+## 本轮修掉的真 bug（按影响排序）
 
-**所以现在的行为是：**
-- 电脑新建会话 → 手机**建不出对应会话** → 降级投到「最近活跃的那个手机会话」（消息能看见，但不是一一对应）
-- 手机新建会话 → 电脑端仍然会看到（`reportPhoneSessions` 每 30 秒上报，走 `pendingNewSession` 自动开对应电脑会话）
+| # | 问题 | 后果 | 修法 |
+|---|---|---|---|
+| 1 | `wakeTick` 走 `http://127.0.0.1:8080/thread` | 8080 回环被别的进程占用 → 每轮 404 → **一条消息都投不出去** | 直接读本地 `thread.jsonl`（`threadFileFromDisk`） |
+| 2 | 手机 `listLiveSessions(agents)` 返回空 | 收件器找不到手机会话 → 消息全 blocked → 手机看不到 | agents 为空时扫 `session_projcache/sessions/` 兜底 |
+| 3 | `titleOf` 声明在使用它的循环之后 | `const` 暂时性死区 → 预建会话每轮抛错 → **一条手机会话都建不出来** | 移到循环之前 |
+| 4 | `writeSessionTitle` 只在 projcache 文件存在时写 | 新建会话来不及落盘 → 永远没标题 → App 列表里看不见 | 文件不存在时直接创建最小结构 |
+| 5 | `aligned:false` + `cursor>0` 组合 | 状态卡死，跳过对齐又不读旧消息 | 补 aligned 标记，不重新对齐 |
+| 6 | busy 计时在 idle 时被清零 | 永远攒不满超时 → 投给正在跑的会话永远不显示 | 超时 120s→15s，只在投递成功后清零 |
+| 7 | 电脑端点 🔗 只写 `links` 不写 `collab` | 投递目标没切换 →「有时行有时不行」 | 同步 `collab.desktopSessionId` / `wake.sessionId` |
+| 8 | 收件器不续租单例租约 | 两个收件器并存 → 同一消息投两遍 | `inboxTick` 每轮 `renewLease` |
+| 9 | 手机上挂了旧收件器 `phone-bridge-inbox` | 同一消息出现两种格式（两套投递） | 从手机 profile 摘掉 |
+| 10 | 手机新建会话 → 电脑不建对应会话 | 一一对应断掉 | `autoPairPhoneSessions` + `pendingNewSession` |
 
-**如果这个降级你受不了**（比如多个手机会话互相串），跟我说，我换另一条路：让电脑端只投给「已确认对应」的会话，其余留在工作台 + 提示，不硬塞。
+## 测试状态
 
----
-
-# 新配对信息（端口已从 8787 改到 8080）
-
-```
-dshphone://192.168.1.10:8080/1fef9e7233821b11967f5b9d9b45a416
-```
-
-配网页：`http://192.168.1.10:8080/pair?t=1fef9e7233821b11967f5b9d9b45a416`
-
-手机如果显示离线，先确认手机浏览器能打开 `http://192.168.1.10:8080/health`。
-
----
-
-# 测试状态
-
-13 个测试文件全绿，共 **222 断言**：
+14 个测试文件全绿，222 断言：
 
 ```
-web 65 / links 14 / gate 14 / thread 17 / delivery-stress 17 / e2e 7
-agents 19 / pair 5 / auth 11 / qr 15 / auto 9 / rotate 6 / render ✓
+auth 11 / gate 14 / gate-phone 8 / web 65 / rotate 6 / render ✓
+auto 9 / pair 5 / qr 15 / links 14/14 / thread 17/17
+e2e 7 / agents 19 / delivery-stress 17/17 / inbox-tick 12/12
 ```
 
-代码：`1f132ad` → `0.6.19`，已 push 到 github.com/undertale11121/dsh-phone-bridge。
+## 手机端
 
----
+- 代码已更新到 **149045 字节**（`threadFileFromDisk` 2 处、`session_projcache` 4 处、`node --check` 通过）
+- 手机日志已正常：
+  ```
+  00:31:51 收件器已启动（agents 已注入）
+  00:32:04 预建手机会话：e220963a → a1924b00
+  ```
+- `inbox-state.json`：`cursor 341`、`blocked {}`、`lastError ""`
 
-# 还没做的（不影响早上验主链路）
+## 端口
 
-- npm 0.6.17 还 staged 等你点批准（`7cc3e1d6-4fb8-4742-8971-860d7cc7940e`），之后还要发 0.6.19
-- 市场 PR [#104](https://github.com/ccch1mneyyy/dsh-go-market/pull/104) 等维护者合并
-- 提醒：npm token `npm_…（已在对话里明文出现过，请到 npm 后台 revoke 换新）` 已经写在对话里了，建议 revoke 换一个
+桥接跑在 **8080**（8787 被 360 安全软件拦，手机连不上，已整体搬过来）。
+
+- 配对串：`dshphone://192.168.1.10:8080/1fef9e7233821b11967f5b9d9b45a416`
+- 注意：本机 `127.0.0.1:8080` 被另一个进程占用，本机测试请用 `http://192.168.1.10:8080`
+
+## 已知限制
+
+手机 DSH 的 `agents.create` 有时会抛 `no agent factory registered`（agent-loop 插件在某些重启后没起好）。
+已加降级：建不了新会话时投给「最近活跃的手机会话」，保证消息不丢；但那种情况下做不到严格一一对应。
