@@ -1554,6 +1554,24 @@ export function listLiveSessions(agents) {
       } catch {}
     }
   } catch {}
+  // 手机上的 agents 服务在启动早期经常一个 agent 都没注册（实测返回空），
+  // 而会话文件其实都在 projcache 里。这里直接扫目录兜底，免得收件器因为
+  // 拿不到 live 列表把所有手机消息都 block 住（表现为「手机看不到对话」）。
+  if (!rows.length) {
+    try {
+      const dir = path.join(dshHome(), 'storages', 'session_projcache', 'sessions')
+      for (const file of fs.readdirSync(dir)) {
+        if (!file.endsWith('.json')) continue
+        const id = file.slice(0, -5)
+        if (!id || /^mnemon-/.test(id)) continue
+        const meta = sessionMeta(id)
+        if (!meta.at) continue
+        rows.push({ id, at: meta.at, cwd: meta.cwd, title: meta.title, name: '', purpose: '' })
+      }
+    } catch {
+      // 扫不到就维持空列表，上层按「找不到会话」处理
+    }
+  }
   const real = rows.filter((row) => !/^mnemon-run-/.test(row.id))
   return (real.length ? real : rows).sort((a, b) => b.at - a.at)
 }
