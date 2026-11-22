@@ -1162,6 +1162,13 @@ async function fulfilPendingSession() {
   const links = readLinks()
   links[id] = { phoneId: String(pending.phoneId), at: new Date().toISOString() }
   writeLinks(links)
+  // 新会话要有标题，否则手机 App 的列表里又是一条空白条目（用户反复报的就是这个）。
+  // 标题取手机上报过的 psess:<phoneId> 的 name；拿不到就让引擎用默认名，别硬编。
+  try {
+    const name = String(pending.phoneName || '')
+      || String(((readAgents() || []).find((row) => row && row.id === `psess:${pending.phoneId}`) || {}).name || '')
+    if (name) writeSessionTitle(id, name)
+  } catch {}
   // 两边都要亮：手机端那颗开关靠这个会话出现在 links 里，电脑端靠 desktopSessionId。
   patchConfig({
     pendingNewSession: null,
@@ -1777,7 +1784,8 @@ async function autoPairPhoneSessions(rows, base, token) {
   lastAutoPairAt = now
   const row = fresh[0]
   try {
-    const out = await bridgePost(base, '/collab', token, { phoneId: row.id }, 8000)
+    // 带上手机会话的标题：电脑端新建的会话要用它当名字，否则 App 列表里是空白条目。
+    const out = await bridgePost(base, '/collab', token, { phoneId: row.id, phoneName: String(row.title || '') }, 8000)
     if (out && out.ok !== false) {
       console.log(`[phone-bridge] 手机会话 ${shortSession(row.id)} 没有电脑对话，已请求电脑新开一个`)
     }

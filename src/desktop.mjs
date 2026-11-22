@@ -667,7 +667,7 @@ class DesktopBridge {
           // 手机端点了开关、但电脑上还没有跟它配对的会话：开一个新会话接上。
           // 绝不猜「电脑上最近开着的那个」——那会把不同手机会话串到同一个电脑会话
           // （用户要的是一一对应）。便签交给宿主半兑现（fulfilPendingSession）。
-          patchDesktopConfig({ pendingNewSession: { phoneId, at: new Date().toISOString() } })
+          patchDesktopConfig({ pendingNewSession: { phoneId, phoneName: String(body?.phoneName || '').trim(), at: new Date().toISOString() } })
           return sendJson(res, 200, {
             ok: true,
             pending: true,
@@ -677,7 +677,7 @@ class DesktopBridge {
         if (!key) {
           // 用户 m04603：手机上点开互联、电脑上却一个会话都没开 —— 别报错，
           // 留张便签给宿主半，让它开一个新会话再接上。
-          patchDesktopConfig({ pendingNewSession: { phoneId, at: new Date().toISOString() } })
+          patchDesktopConfig({ pendingNewSession: { phoneId, phoneName: String(body?.phoneName || '').trim(), at: new Date().toISOString() } })
           return sendJson(res, 200, { ok: true, pending: true, text: '电脑上没有开着的会话，正在给你开一个新的…' })
         }
         if (body?.off) delete links[key]
